@@ -10,6 +10,9 @@ add_library(p8 STATIC
             p8_static_checks.cpp
             p8_tls_writer.hpp
             p8_tls_writer.cpp
+            p8_sink.hpp
+            p8_sink_null.hpp
+            p8_sink_null.cpp
             p8_log.hpp
             p8_log.cpp
             p8_mtk.hpp

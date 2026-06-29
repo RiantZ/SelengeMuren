@@ -111,7 +111,7 @@ extern "C"
     struct s_p8_svc_hdr
     {
         uint8_t  mu_packet_type; // P8_PACKET_SERVICE
-        uint8_t  mu_type;        // P8_SVC_TYPE_XXX
+        uint8_t  mu_svc_type;    // P8_SVC_TYPE_XXX
         uint16_t mu_size;        // size including header
     };
 

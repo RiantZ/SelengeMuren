@@ -1,5 +1,5 @@
 {
-    //Library sink, supported values: file.bin, network.tcp
+    //Library sink, supported values: file.bin, network.tcp, null
     "sink": "file.bin",
     //Sink destination: hdd/network path or {IP v4/IP v5/host name}:port
     "destination": "",

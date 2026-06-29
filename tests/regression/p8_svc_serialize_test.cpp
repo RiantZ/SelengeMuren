@@ -42,7 +42,7 @@ static std::vector<s_svc_entry> collect_service_entries()
             }
 
             s_svc_entry lo_entry;
-            lo_entry.mu_type = lo_hdr.mu_type;
+            lo_entry.mu_type = lo_hdr.mu_svc_type;
             lo_entry.mo_bytes.assign(lr_buf.data() + lz_off, lr_buf.data() + lz_off + lo_hdr.mu_size);
             lo_entries.push_back(std::move(lo_entry));
 

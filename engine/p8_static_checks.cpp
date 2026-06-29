@@ -59,7 +59,7 @@ static_assert(offsetof(struct s_p8_hdr, mu_hash) == 560, "s_p8_hdr::mu_hash offs
 // s_p8_svc_hdr
 static_assert(sizeof(struct s_p8_svc_hdr) == 4, "s_p8_svc_hdr wire size changed");
 static_assert(offsetof(struct s_p8_svc_hdr, mu_packet_type) == 0, "s_p8_svc_hdr::mu_packet_type offset changed");
-static_assert(offsetof(struct s_p8_svc_hdr, mu_type) == 1, "s_p8_svc_hdr::mu_type offset changed");
+static_assert(offsetof(struct s_p8_svc_hdr, mu_svc_type) == 1, "s_p8_svc_hdr::mu_type offset changed");
 static_assert(offsetof(struct s_p8_svc_hdr, mu_size) == 2, "s_p8_svc_hdr::mu_size offset changed");
 
 // s_p8_data_buf_hdr

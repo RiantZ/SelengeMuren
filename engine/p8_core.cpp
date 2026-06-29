@@ -2,6 +2,7 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_sink_null.hpp"
 #include "p8_tls_writer.hpp"
 
 #include "kit/endian.hpp"
@@ -92,6 +93,42 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Create a heap sink for the requested kind; the caller owns it and must delete
+// it. Unimplemented kinds (file, net) currently return a null sink.
+static cp8_sink_iface *create_sink(const char *ip_value)
+{
+    if(!ip_value)
+    {
+        // No sink configured: default to the null sink.
+        std::fprintf(stderr, "create_sink: warning! default null sinc is created\n");
+        return new(std::nothrow) cp8_sink_null();
+    }
+
+    // TODO: pass mo_hdr to sinc
+    // TODO: pass configuration to sinc
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_FILE_BIN) == 0)
+    {
+        std::fprintf(stderr, "create_sink: file sink not implemented yet, falling back to null sink\n");
+        return nullptr;
+    }
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_NETWORK_TCP) == 0)
+    {
+        std::fprintf(stderr, "create_sink: network sink not implemented yet, falling back to null sink\n");
+        return nullptr;
+    }
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_NETWORK_NULL) == 0)
+    {
+        return new(std::nothrow) cp8_sink_null();
+    }
+
+    std::fprintf(stderr, "create_sink: unrecognized sinc type %s\n", ip_value);
+    return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // cp8_core implementation
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -126,16 +163,6 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
         return;
     }
 
-    if(lo_json.contains(P8_CFG_KEY_SINK))
-    {
-        // TODO: configure sync mode (file.bin, network.tcp)
-    }
-
-    if(lo_json.contains(P8_CFG_KEY_DESTINATION))
-    {
-        // TODO: configure destination path or network endpoint
-    }
-
     std::string ls_max_mem;
     std::string ls_init_mem;
 
@@ -157,6 +184,27 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
 
     init_header(ip_config);
 
+    std::string ls_sink_value;
+
+    if(lo_json.contains(P8_CFG_KEY_SINK))
+    {
+        ls_sink_value = lo_json[P8_CFG_KEY_SINK].get<std::string>();
+    }
+
+    mp_sink = create_sink(ls_sink_value.empty() ? nullptr : ls_sink_value.c_str());
+    if(!mp_sink)
+    {
+        std::fprintf(stderr, "cp8_core: sink allocation failed\n");
+        return;
+    }
+
+    if(!mp_sink->open())
+    {
+        std::fprintf(stderr, "cp8_core: sink open failed\n");
+        delete mp_sink;
+        mp_sink = nullptr;
+    }
+
     mb_initialized = true;
 
     start_worker();
@@ -166,6 +214,14 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
 cp8_core::~cp8_core()
 {
     stop_worker();
+
+    // the final drain ran inside stop_worker(); release the sink afterwards
+    if(mp_sink)
+    {
+        mp_sink->close();
+        delete mp_sink;
+        mp_sink = nullptr;
+    }
 
     for(auto &lo_pair : mo_log_descs)
     {
@@ -364,6 +420,9 @@ void cp8_core::stop_worker()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::worker_main()
 {
+    kit::c_lst<uint8_t *>    lo_ready;
+    kit::c_lst<s_p8_svc_buf> lo_bufs;
+
     // best-effort: raising priority typically needs elevated privileges, failure is non-fatal
     kit::set_thread_priority(kit::e_tp_time_critical);
 
@@ -371,16 +430,46 @@ void cp8_core::worker_main()
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
 
-        if(lu_signal == mu_event_stop)
+        // move buffers from list protected by mutex to local one
+        mo_svc_mutex.lock();
+        while(mo_svc_buffers.size())
         {
-            // final drain: consume anything submitted between the last iteration and stop,
-            // including the current partial service buffer so tail data is not lost
-            do_iteration();
-            break;
+            lo_bufs.push_last(mo_svc_buffers.pull_first());
+        }
+        mo_svc_mutex.unlock();
+        //--------------------------------------------------------
+
+        if(lo_bufs.size() > 0)
+        {
+            mp_sink->write_service(lo_bufs);
         }
 
-        // lu_signal == mu_event_wake (external event) or c_event::timeout
-        do_iteration();
+        // recycle the consumed service buffers back to the pool
+        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); });
+
+        // move buffers from list protected by mutex to local one
+        mo_ready_lock.lock();
+        while(mo_ready_queue.size() > 0)
+        {
+            lo_ready.push_last(mo_ready_queue.pull_first());
+        }
+        mo_ready_lock.unlock();
+        //--------------------------------------------------------
+
+        if(lo_ready.size() > 0)
+        {
+            mp_sink->write_data(lo_ready);
+        }
+
+        // recycle the consumed data buffers back to the pool
+        lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
+
+        mp_sink->flush();
+
+        if(lu_signal == mu_event_stop)
+        {
+            break;
+        }
     }
 }
 
@@ -388,30 +477,6 @@ void cp8_core::worker_main()
 void cp8_core::notify()
 {
     mo_worker_event.set(mu_event_wake);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::do_iteration()
-{
-    // TODO: replace by long living object to save on memory allocations
-    //  move the ready-queue out under the lock, then recycle outside it so
-    //  the (heavier) pool work never runs while producers are waiting on the lock
-    kit::c_lst<uint8_t *> lo_ready;
-
-    {
-        std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
-
-        while(mo_ready_queue.size() > 0)
-        {
-            lo_ready.push_last(mo_ready_queue.pull_first());
-        }
-    }
-
-    // stub consumption: no sink yet — recycle straight back to the pool
-    lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
-
-    // drain full service buffers; the current in-progress one stays until it fills
-    drain_service_buffers();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -668,7 +733,7 @@ size_t cp8_core::get_buffer_size()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-cp8_core::s_p8_svc_buf *cp8_core::svc_acquire_new()
+s_p8_svc_buf *cp8_core::svc_acquire_new()
 {
     uint8_t *lp_buf = acquire_buffer();
     if(!lp_buf)
@@ -743,7 +808,7 @@ void cp8_core::serialize_attr_desc(const s_p8_attr_desc *ip_desc)
 
     s_p8_attr_svc *lp_entry         = reinterpret_cast<s_p8_attr_svc *>(lp_dst);
     lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
-    lp_entry->ms_hdr.mu_type        = P8_SVC_TYPE_ATTR;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_ATTR;
     lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
     lp_entry->mi_id                 = ip_desc->mi_id;
     lp_entry->mu_type               = static_cast<uint8_t>(ip_desc->me_type);
@@ -789,7 +854,7 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
 
     s_p8_log_item_svc *lp_entry     = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
     lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
-    lp_entry->ms_hdr.mu_type        = P8_SVC_TYPE_LOG_DESC;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_LOG_DESC;
     lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
     lp_entry->mu_line               = ip_desc->mu_line;
     lp_entry->mu_hash               = ip_desc->mu_hash;
@@ -819,26 +884,6 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
         memcpy(lp_var, ip_desc->ma_args, lz_args * sizeof(s_p8_log_varg));
     }
     // trailing padding is already zeroed by svc_reserve
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::drain_service_buffers()
-{
-    // TODO: replace by long living object
-    kit::c_lst<uint8_t *> lo_bufs;
-
-    {
-        std::lock_guard<std::mutex> lo_guard(mo_svc_mutex);
-
-        while(mo_svc_buffers.size())
-        {
-            s_p8_svc_buf lo_pair = mo_svc_buffers.pull_first();
-            lo_bufs.push_last(lo_pair.mp_buf);
-        }
-    }
-
-    // stub consumption: no sink yet — recycle straight back to the pool
-    lo_bufs.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

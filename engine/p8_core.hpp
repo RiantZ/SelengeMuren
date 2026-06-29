@@ -4,6 +4,7 @@
 #include "p8_client_api.h"
 #include "p8_memory_budget.hpp"
 #include "p8_protocol.h"
+#include "p8_sink.hpp"
 
 #include "kit/event.hpp"
 #include "kit/list.hpp"
@@ -34,15 +35,6 @@ struct s_p8_attr_desc
 class cp8_core
 {
 public:
-    // One serialized service buffer together with how many bytes of it are in
-    // use. Service buffers carry no data-buffer header; the used size is tracked
-    // here so a consumer knows each buffer's payload length directly.
-    struct s_p8_svc_buf
-    {
-        uint8_t *mp_buf  = nullptr;
-        size_t   mz_used = 0;
-    };
-
     explicit cp8_core(const struct s_p8_config *ip_config);
     ~cp8_core();
 
@@ -120,7 +112,6 @@ private:
     void start_worker();
     void stop_worker();
     void worker_main();
-    void do_iteration();
 
     // service-data serialization (log + attr descriptors). All helpers below
     // assume mo_svc_mutex is held by the caller.
@@ -128,13 +119,16 @@ private:
     uint8_t      *svc_reserve(size_t iz_padded);
     void          serialize_attr_desc(const s_p8_attr_desc *ip_desc);
     void          serialize_log_desc(const struct s_p8_log_desc *ip_desc);
-    // Drains service buffers and recycles them. Takes mo_svc_mutex itself.
-    void drain_service_buffers();
 
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };
 
-    struct s_p8_hdr mo_hdr = {};
+    struct s_p8_hdr mo_hdr  = {};
+
+    // Single consumer endpoint for all produced buffers. Owned by the core,
+    // created in the constructor and destroyed in the destructor. Only the
+    // worker thread calls into it.
+    cp8_sink_iface *mp_sink = nullptr;
 
     // shared memory budget => memory limiter, to avoid memory allocation without control under the pressure
     std::shared_ptr<cp8_memory_budget> mp_memory_budget;
