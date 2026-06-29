@@ -466,21 +466,20 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
     // write item header
     {
-        uint8_t *lp_base        = mp_buffer + mz_buf_used;
-        lp_buf_end              = mp_buffer + mz_buf_max;
+        uint8_t *lp_base       = mp_buffer + mz_buf_used;
+        lp_buf_end             = mp_buffer + mz_buf_max;
 
-        lp_hdr                  = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
-        lp_hdr->mu_hash         = lp_desc->mu_hash;
-        lp_hdr->mu_timestamp    = kit::get_hires_ticks();
-        lp_hdr->mu_trace_id     = iu_trace_id;
-        lp_hdr->mu_thread_id    = mu_thread_id;
-        lp_hdr->mu_level        = static_cast<uint8_t>(ie_level);
-        lp_hdr->mu_processor    = 0;
-        lp_hdr->mu_attrs_count  = 0;
-        lp_hdr->mu_padding_size = 0;
-        lp_hdr->mu_flags        = 0;
+        lp_hdr                 = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
+        lp_hdr->mu_hash        = lp_desc->mu_hash;
+        lp_hdr->mu_timestamp   = kit::get_hires_ticks();
+        lp_hdr->mu_trace_id    = iu_trace_id;
+        lp_hdr->mu_thread_id   = mu_thread_id;
+        lp_hdr->mu_level       = static_cast<uint8_t>(ie_level);
+        lp_hdr->mu_processor   = 0;
+        lp_hdr->mu_attrs_count = 0;
+        lp_hdr->mu_flags       = 0;
 
-        lp_dst                  = lp_base + sizeof(struct s_p8_log_item_dat);
+        lp_dst                 = lp_base + sizeof(struct s_p8_log_item_dat);
     }
 
     // serialize variable arguments
@@ -502,16 +501,16 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
                 if(P8_LOG_ARG_TYPE_USTR16 == lp_arg->mu_type)
                 {
-                    const uint16_t *lp_u16 = va_arg(io_args, const uint16_t *);
-                    lp_str                 = lp_u16;
-                    if(lp_u16)
+                    const uint16_t *lp_u16  = va_arg(io_args, const uint16_t *);
+                    lp_str                  = lp_u16;
+                    const uint16_t *lp_zero = lp_u16;
+                    if(lp_zero)
                     {
-                        size_t lz_chars = 0;
-                        while(lp_u16[lz_chars])
+                        while(*lp_zero)
                         {
-                            lz_chars++;
+                            lp_zero++;
                         }
-                        size_t lz_bytes = lz_chars * sizeof(uint16_t);
+                        size_t lz_bytes = (lp_zero - lp_u16) * sizeof(uint16_t);
                         lu_len          = (lz_bytes > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_bytes);
                     }
                 }
@@ -649,12 +648,21 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lu_attrs_count++;
     }
 
-    // finalize item header
-    lp_hdr->mu_attrs_count = lu_attrs_count;
-    lp_hdr->mu_size        = static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
+    // Align the next item header to 8 bytes for direct 64-bit field reads. Pad
+    // the buffer write offset, not the logical size; the buffer is a multiple of
+    // 8, so the pad always fits without crossing the buffer end. The pad bytes are
+    // left as-is (consumers skip them via mu_size) to avoid emitting a predictable
+    // run of zeros that would weaken downstream encryption.
+    {
+        size_t lz_size          = sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written;
+        size_t lz_pad           = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
+        lp_hdr->mu_attrs_count  = lu_attrs_count;
+        lp_hdr->mu_size         = static_cast<uint16_t>(lz_size + lz_pad);
+        lp_dst                 += lz_pad;
+    }
 
     // update current buffer state
-    mz_buf_used            = static_cast<size_t>(lp_dst - mp_buffer);
+    mz_buf_used = static_cast<size_t>(lp_dst - mp_buffer);
 
     {
         struct s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<struct s_p8_data_buf_hdr *>(mp_buffer);

@@ -16,6 +16,13 @@
 // helpers: reassemble captured buffers into a linear payload
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Each log item is padded so its total size (mu_size) lands on an 8-byte
+// boundary; mirror that rounding when computing expected wire sizes.
+static uint32_t expected_item_size(size_t iz_unpadded)
+{
+    return static_cast<uint16_t>((iz_unpadded + 7u) & ~static_cast<size_t>(7u));
+}
+
 struct s_log_content_parsed
 {
     s_p8_data_buf_hdr    mo_buf_hdr;
@@ -559,9 +566,12 @@ TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
         __FILE__);
     ASSERT_TRUE(lo_ctx.mb_result);
 
-    auto lo_parsed = parse_captured_buffers();
+    auto   lo_parsed  = parse_captured_buffers();
+    size_t lz_size    = sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size;
+    lz_size          += 8u - lz_size & 7u;
+
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size));
+              expected_item_size(sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size));
 }
 
 TEST_F(c_log_content_test, item_hdr_attrs_count_zero)
@@ -1259,7 +1269,7 @@ TEST_F(c_log_content_test, item_size_with_attrs)
 
     size_t lz_attrs_bytes = sizeof(p8_attr_id) + sizeof(uint64_t);
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size + lz_attrs_bytes));
+              expected_item_size(sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size + lz_attrs_bytes));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1335,7 +1345,7 @@ TEST_F(c_log_content_test, no_args_no_attrs)
     auto lo_parsed = parse_captured_buffers();
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_args_size, 0u);
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_attrs_count, 0u);
-    EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size, static_cast<uint32_t>(sizeof(s_p8_log_item_dat)));
+    EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size, expected_item_size(sizeof(s_p8_log_item_dat)));
 }
 
 TEST_F(c_log_content_test, string_truncated_to_uint16_max)
@@ -1434,7 +1444,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_args_size, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lo_items[0].mo_hdr.mu_attrs_count, 0u);
     EXPECT_EQ(lo_items[0].mo_hdr.mu_size,
-              static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lo_items[0].mo_hdr.mu_args_size));
+              expected_item_size(sizeof(s_p8_log_item_dat) + lo_items[0].mo_hdr.mu_args_size));
     {
         size_t   lz_off = 0;
         uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
@@ -1446,7 +1456,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
     EXPECT_EQ(lo_items[1].mo_hdr.mu_level, static_cast<uint8_t>(e_p8_trace1));
     EXPECT_EQ(lo_items[1].mo_hdr.mu_attrs_count, 0u);
     EXPECT_EQ(lo_items[1].mo_hdr.mu_size,
-              static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lo_items[1].mo_hdr.mu_args_size));
+              expected_item_size(sizeof(s_p8_log_item_dat) + lo_items[1].mo_hdr.mu_args_size));
     {
         size_t      lz_off = 0;
         std::string lo_str = read_string(lo_items[1].mo_payload, lz_off);
@@ -1465,6 +1475,57 @@ TEST_F(c_log_content_test, multi_send_three_items)
         double ld_val      = read_val<double>(lo_items[2].mo_payload, lz_off);
         double ld_expected = 3.14;
         EXPECT_EQ(memcmp(&ld_val, &ld_expected, sizeof(double)), 0);
+    }
+}
+
+TEST_F(c_log_content_test, item_size_8_byte_aligned)
+{
+    std::thread lo_thread(
+        []()
+        {
+            // records whose unpadded sizes are deliberately not multiples of 8
+            // (string args of differing length) so the padding path is exercised
+            p8_log_sent(e_p8_trace0,
+                        nullptr,
+                        0,
+                        static_cast<uint32_t>(__LINE__),
+                        __FILE__,
+                        __FUNCTION__,
+                        0,
+                        nullptr,
+                        "%s",
+                        "abc");
+            p8_log_sent(e_p8_trace0,
+                        nullptr,
+                        0,
+                        static_cast<uint32_t>(__LINE__),
+                        __FILE__,
+                        __FUNCTION__,
+                        0,
+                        nullptr,
+                        "%s",
+                        "hello world");
+            p8_log_sent(e_p8_trace0,
+                        nullptr,
+                        0,
+                        static_cast<uint32_t>(__LINE__),
+                        __FILE__,
+                        __FUNCTION__,
+                        0,
+                        nullptr,
+                        "%d %s",
+                        7,
+                        "tail");
+        });
+    lo_thread.join();
+
+    auto lo_items = parse_all_items();
+    ASSERT_EQ(lo_items.size(), 3u);
+
+    for(const auto &lo_item : lo_items)
+    {
+        EXPECT_EQ(lo_item.mo_hdr.mu_size % 8u, 0u) << "item size must be 8-byte aligned";
+        EXPECT_EQ(lo_item.mo_payload.size(), lo_item.mo_hdr.mu_size - sizeof(s_p8_log_item_dat));
     }
 }
 

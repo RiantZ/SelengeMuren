@@ -4,6 +4,20 @@
 #include <cstddef>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Packet-type discriminator contract.  Every structure that can appear as the first bytes of a packet starts with a
+// 1-byte mu_packet_type (one of P8_PACKET_XXX), so the receiver can dispatch on a single leading byte regardless of
+// which packet struct follows.  This macro freezes that invariant at compile time: mu_packet_type must live at
+// offset 0 and be exactly one byte.  Any reorder, type change, or inserted field ahead of it breaks the build.
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#define P8_ASSERT_PACKET_TYPE_FIRST(T)                                                                                \
+    static_assert(offsetof(struct T, mu_packet_type) == 0, #T ": mu_packet_type must be the first byte");             \
+    static_assert(sizeof(((struct T *)0)->mu_packet_type) == 1, #T ": mu_packet_type must be exactly 1 byte")
+
+P8_ASSERT_PACKET_TYPE_FIRST(s_p8_hdr);
+P8_ASSERT_PACKET_TYPE_FIRST(s_p8_svc_hdr);
+P8_ASSERT_PACKET_TYPE_FIRST(s_p8_data_buf_hdr);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Protocol structures must be 8-byte aligned so that uint64_t members can be accessed without unaligned loads when
 // items are packed sequentially in shared-memory buffers.  A misaligned 64-bit read is either a fault (strict-align
 // architectures) or a silent performance penalty (x86), so we enforce the invariant at compile time.
@@ -44,8 +58,8 @@ static_assert(offsetof(struct s_p8_hdr, mu_hash) == 560, "s_p8_hdr::mu_hash offs
 
 // s_p8_svc_hdr
 static_assert(sizeof(struct s_p8_svc_hdr) == 4, "s_p8_svc_hdr wire size changed");
-static_assert(offsetof(struct s_p8_svc_hdr, mu_type) == 0, "s_p8_svc_hdr::mu_type offset changed");
-static_assert(offsetof(struct s_p8_svc_hdr, mu_flags) == 1, "s_p8_svc_hdr::mu_flags offset changed");
+static_assert(offsetof(struct s_p8_svc_hdr, mu_packet_type) == 0, "s_p8_svc_hdr::mu_packet_type offset changed");
+static_assert(offsetof(struct s_p8_svc_hdr, mu_type) == 1, "s_p8_svc_hdr::mu_type offset changed");
 static_assert(offsetof(struct s_p8_svc_hdr, mu_size) == 2, "s_p8_svc_hdr::mu_size offset changed");
 
 // s_p8_data_buf_hdr
@@ -91,11 +105,9 @@ static_assert(offsetof(struct s_p8_log_item_dat, mu_processor) == 29,
 static_assert(offsetof(struct s_p8_log_item_dat, mu_args_size) == 30,
               "s_p8_log_item_dat::mu_args_size offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_size) == 32, "s_p8_log_item_dat::mu_size offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_attrs_count) == 36,
+static_assert(offsetof(struct s_p8_log_item_dat, mu_attrs_count) == 34,
               "s_p8_log_item_dat::mu_attrs_count offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_padding_size) == 38,
-              "s_p8_log_item_dat::mu_padding_size offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 39, "s_p8_log_item_dat::mu_flags offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 35, "s_p8_log_item_dat::mu_flags offset changed");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Attribute value type contract.  The public enum e_p8_attr_type (p8_client_api.h) is the source of truth the caller

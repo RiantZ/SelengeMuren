@@ -376,7 +376,6 @@ void cp8_core::worker_main()
             // final drain: consume anything submitted between the last iteration and stop,
             // including the current partial service buffer so tail data is not lost
             do_iteration();
-            drain_service_buffers();
             break;
         }
 
@@ -742,14 +741,14 @@ void cp8_core::serialize_attr_desc(const s_p8_attr_desc *ip_desc)
         return;
     }
 
-    s_p8_attr_svc *lp_entry   = reinterpret_cast<s_p8_attr_svc *>(lp_dst);
-    lp_entry->ms_hdr.mu_type  = P8_SVC_TYPE_ATTR;
-    lp_entry->ms_hdr.mu_flags = 0;
-    lp_entry->ms_hdr.mu_size  = static_cast<uint16_t>(lz_padded);
-    lp_entry->mi_id           = ip_desc->mi_id;
-    lp_entry->mu_type         = static_cast<uint8_t>(ip_desc->me_type);
+    s_p8_attr_svc *lp_entry         = reinterpret_cast<s_p8_attr_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_type        = P8_SVC_TYPE_ATTR;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mi_id                 = ip_desc->mi_id;
+    lp_entry->mu_type               = static_cast<uint8_t>(ip_desc->me_type);
 
-    uint8_t *lp_name          = lp_dst + sizeof(s_p8_attr_svc);
+    uint8_t *lp_name                = lp_dst + sizeof(s_p8_attr_svc);
     if(lz_name)
     {
         memcpy(lp_name, ip_desc->mp_name, lz_name);
@@ -788,18 +787,18 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
         return;
     }
 
-    s_p8_log_item_svc *lp_entry = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
-    lp_entry->ms_hdr.mu_type    = P8_SVC_TYPE_LOG_DESC;
-    lp_entry->ms_hdr.mu_flags   = 0;
-    lp_entry->ms_hdr.mu_size    = static_cast<uint16_t>(lz_padded);
-    lp_entry->mu_line           = ip_desc->mu_line;
-    lp_entry->mu_hash           = ip_desc->mu_hash;
-    lp_entry->mu_format_len     = static_cast<uint16_t>(lz_fmt);
-    lp_entry->mu_file_len       = static_cast<uint16_t>(lz_file);
-    lp_entry->mu_function_len   = static_cast<uint16_t>(lz_func);
-    lp_entry->mu_args_count     = static_cast<uint8_t>(lz_args);
+    s_p8_log_item_svc *lp_entry     = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_type        = P8_SVC_TYPE_LOG_DESC;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mu_line               = ip_desc->mu_line;
+    lp_entry->mu_hash               = ip_desc->mu_hash;
+    lp_entry->mu_format_len         = static_cast<uint16_t>(lz_fmt);
+    lp_entry->mu_file_len           = static_cast<uint16_t>(lz_file);
+    lp_entry->mu_function_len       = static_cast<uint16_t>(lz_func);
+    lp_entry->mu_args_count         = static_cast<uint8_t>(lz_args);
 
-    uint8_t *lp_var             = lp_dst + sizeof(s_p8_log_item_svc);
+    uint8_t *lp_var                 = lp_dst + sizeof(s_p8_log_item_svc);
     if(lz_file)
     {
         memcpy(lp_var, ip_desc->mp_file, lz_file);
