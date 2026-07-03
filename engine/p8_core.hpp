@@ -123,7 +123,7 @@ private:
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };
 
-    struct s_p8_hdr mo_hdr  = {};
+    s_p8_hdr mo_hdr         = {};
 
     // Single consumer endpoint for all produced buffers. Owned by the core,
     // created in the constructor and destroyed in the destructor. Only the

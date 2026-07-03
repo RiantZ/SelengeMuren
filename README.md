@@ -50,7 +50,7 @@ python scripts/code_format.py --format --staged
 cd _Build_mac && ctest && cd ..
 
 # Run performance tests (disabled by default, must be requested explicitly)
-cd _Build_mac && ./tests/regression/P8_RegressionTests --gtest_filter="c_log_perf_test.*" --gtest_also_run_disabled_tests
+cd _Build_mac && ./tests/regression/P8_RegressionTests --gtest_filter="*c_log_perf*" --gtest_also_run_disabled_tests && cd ..
 ```
 
 Logs: _Build_mac/Testing/Temporary/LastTest.log

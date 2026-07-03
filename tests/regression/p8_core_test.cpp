@@ -4,8 +4,14 @@
 
 #include <gtest/gtest.h>
 
+#include <nlohmann/json.hpp>
+
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <latch>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -281,4 +287,78 @@ TEST_F(c_p8_core_test, get_global_core_timeout_no_init)
     EXPECT_EQ(lp_core, nullptr);
     EXPECT_GE(lo_elapsed.count(), 50);
     EXPECT_LE(lo_elapsed.count(), 200);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// file.bin sink tests
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace
+{
+std::filesystem::path make_scratch_dir(const char *ip_stem)
+{
+    const auto      lo_root = std::filesystem::temp_directory_path()
+                              / (std::string(ip_stem) + "_" + std::to_string(static_cast<uint64_t>(std::rand())));
+    std::error_code lo_ec;
+    std::filesystem::remove_all(lo_root, lo_ec);
+    return lo_root;
+}
+} // namespace
+
+TEST_F(c_p8_core_test, file_bin_sink_writes_service_data_end_to_end)
+{
+    const auto lo_out_dir = make_scratch_dir("p8_core_filebin_ok");
+
+    nlohmann::json lo_json;
+    lo_json[P8_CFG_KEY_SINK]                              = P8_CFG_VAL_SINK_FILE_BIN;
+    lo_json[P8_CFG_KEY_FILE_BIN][P8_CFG_KEY_FILE_OUT_DIR] = lo_out_dir.string();
+    const std::string ls_config                           = lo_json.dump();
+
+    struct s_p8_config lo_config                          = {};
+    lo_config.mp_json_config                              = ls_config.c_str();
+
+    ASSERT_TRUE(p8_initialize(&lo_config));
+    EXPECT_TRUE(P8_IS_ATTR_VALID(p8_attr_register("test_attr", e_p8_attr_str)));
+
+    p8_release();
+
+    ASSERT_TRUE(std::filesystem::exists(lo_out_dir));
+
+    bool lb_found_nonempty_svc = false;
+    for(const auto &lo_entry : std::filesystem::directory_iterator(lo_out_dir))
+    {
+        if(lo_entry.path().extension() == ".p8svc" && std::filesystem::file_size(lo_entry.path()) > 0)
+        {
+            lb_found_nonempty_svc = true;
+        }
+    }
+    EXPECT_TRUE(lb_found_nonempty_svc);
+
+    std::error_code lo_ec;
+    std::filesystem::remove_all(lo_out_dir, lo_ec);
+}
+
+TEST_F(c_p8_core_test, file_bin_sink_open_failure_falls_back_to_null_sink)
+{
+    // a regular file in place of the OutDir directory makes create_directories fail
+    const auto lo_blocker = make_scratch_dir("p8_core_filebin_blocked");
+    {
+        std::ofstream lo_out(lo_blocker);
+        lo_out << "not a directory";
+    }
+    const auto lo_out_dir = lo_blocker / "subdir";
+
+    nlohmann::json lo_json;
+    lo_json[P8_CFG_KEY_SINK]                              = P8_CFG_VAL_SINK_FILE_BIN;
+    lo_json[P8_CFG_KEY_FILE_BIN][P8_CFG_KEY_FILE_OUT_DIR] = lo_out_dir.string();
+    const std::string ls_config                           = lo_json.dump();
+
+    struct s_p8_config lo_config                          = {};
+    lo_config.mp_json_config                              = ls_config.c_str();
+
+    EXPECT_TRUE(p8_initialize(&lo_config));
+    EXPECT_TRUE(p8_get_initialized());
+
+    std::error_code lo_ec;
+    std::filesystem::remove_all(lo_blocker, lo_ec);
 }

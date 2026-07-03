@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+struct s_p8_hdr;
+
 // Service buffers carry no header, only individual sub-elements, so the used
 // byte count travels alongside the pointer. Shared with cp8_core.
 struct s_p8_svc_buf
@@ -37,6 +39,11 @@ public:
     // Acquire the underlying medium (open file / connect socket). Returns false
     // on failure, in which case the core falls back to a drop sink.
     virtual bool open()                                                    = 0;
+
+    // Emit the P8_PACKET_MAIN hello header, once, right after a successful
+    // open() and before any write_service/write_data call. Returns true on
+    // success.
+    virtual bool write_hello(const struct s_p8_hdr &ir_hdr)                = 0;
 
     // Consume a batch of data buffers (logs / traces / metrics). Each buffer
     // begins with s_p8_data_buf_hdr (mu_packet_type + mu_size). Read-only: the

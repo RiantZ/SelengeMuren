@@ -12,3 +12,7 @@
 #define P8_CFG_VAL_SINK_FILE_BIN       "file.bin"
 #define P8_CFG_VAL_SINK_NETWORK_TCP    "network.tcp"
 #define P8_CFG_VAL_SINK_NETWORK_NULL   "null"
+
+/// "FileBin" sink section and its keys.
+#define P8_CFG_KEY_FILE_BIN            "FileBin"
+#define P8_CFG_KEY_FILE_OUT_DIR        "OutDir"

@@ -2,6 +2,7 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_sink_file.hpp"
 #include "p8_sink_null.hpp"
 #include "p8_tls_writer.hpp"
 
@@ -94,8 +95,9 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Create a heap sink for the requested kind; the caller owns it and must delete
-// it. Unimplemented kinds (file, net) currently return a null sink.
-static cp8_sink_iface *create_sink(const char *ip_value)
+// it. Unimplemented kinds (net) and unrecognized values currently return nullptr;
+// the caller falls back to a null sink.
+static cp8_sink_iface *create_sink(const char *ip_value, const nlohmann::json &ir_config)
 {
     if(!ip_value)
     {
@@ -104,13 +106,9 @@ static cp8_sink_iface *create_sink(const char *ip_value)
         return new(std::nothrow) cp8_sink_null();
     }
 
-    // TODO: pass mo_hdr to sinc
-    // TODO: pass configuration to sinc
-
     if(strcmp(ip_value, P8_CFG_VAL_SINK_FILE_BIN) == 0)
     {
-        std::fprintf(stderr, "create_sink: file sink not implemented yet, falling back to null sink\n");
-        return nullptr;
+        return new(std::nothrow) cp8_sink_file(ir_config);
     }
 
     if(strcmp(ip_value, P8_CFG_VAL_SINK_NETWORK_TCP) == 0)
@@ -191,7 +189,7 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
         ls_sink_value = lo_json[P8_CFG_KEY_SINK].get<std::string>();
     }
 
-    mp_sink = create_sink(ls_sink_value.empty() ? nullptr : ls_sink_value.c_str());
+    mp_sink = create_sink(ls_sink_value.empty() ? nullptr : ls_sink_value.c_str(), lo_json);
     if(!mp_sink)
     {
         std::fprintf(stderr, "cp8_core: sink allocation failed\n");
@@ -200,9 +198,21 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
 
     if(!mp_sink->open())
     {
-        std::fprintf(stderr, "cp8_core: sink open failed\n");
+        std::fprintf(stderr, "cp8_core: sink open failed, falling back to null sink\n");
         delete mp_sink;
-        mp_sink = nullptr;
+        mp_sink = new(std::nothrow) cp8_sink_null();
+        if(!mp_sink || !mp_sink->open())
+        {
+            std::fprintf(stderr, "cp8_core: fallback null sink failed\n");
+            delete mp_sink;
+            mp_sink = nullptr;
+            return;
+        }
+    }
+
+    if(!mp_sink->write_hello(mo_hdr))
+    {
+        std::fprintf(stderr, "cp8_core: sink write_hello failed\n");
     }
 
     mb_initialized = true;
@@ -445,7 +455,8 @@ void cp8_core::worker_main()
         }
 
         // recycle the consumed service buffers back to the pool
-        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); });
+        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
+                      kit::e_c_lst_pool_policy::e_keep);
 
         // move buffers from list protected by mutex to local one
         mo_ready_lock.lock();
@@ -462,7 +473,7 @@ void cp8_core::worker_main()
         }
 
         // recycle the consumed data buffers back to the pool
-        lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
+        lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 
         mp_sink->flush();
 
@@ -666,7 +677,7 @@ void cp8_core::release_buffers(kit::c_lst<uint8_t *> &io_buffers)
         return;
     }
 
-    io_buffers.clear([this](uint8_t *ip_buf) { mp_data_pool->recycle(ip_buf); });
+    io_buffers.clear([this](uint8_t *ip_buf) { mp_data_pool->recycle(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -720,7 +731,8 @@ void cp8_core::submit_chain(kit::c_lst<uint8_t *> &io_buffers)
                 }
 #endif
                 mo_ready_queue.push_last(ip_buf);
-            });
+            },
+            kit::e_c_lst_pool_policy::e_keep);
     }
 
     notify();
