@@ -56,19 +56,6 @@ bool cp8_sink_file::open()
         return false;
     }
 
-    std::error_code lo_ec;
-    std::filesystem::create_directories(mo_out_dir, lo_ec);
-    if(lo_ec)
-    {
-        std::fprintf(stderr,
-                     "cp8_sink_file::open: failed to create output directory %s: %s\n",
-                     mo_out_dir.string().c_str(),
-                     lo_ec.message().c_str());
-        return false;
-    }
-
-    // session-unique base name: UTC timestamp + process id, guards against
-    // filename collisions between processes sharing one OutDir
     const std::time_t lz_now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm           lo_tm  = {};
 #if defined(_WIN32)
@@ -80,10 +67,35 @@ bool cp8_sink_file::open()
     char la_stamp[32];
     std::strftime(la_stamp, sizeof(la_stamp), "%Y%m%d_%H%M%S", &lo_tm);
 
-    const std::string ls_base = std::string("p8_") + la_stamp + "_" + std::to_string(kit::get_process_id());
+    char la_proc_name[256];
+    kit::get_process_name(la_proc_name, sizeof(la_proc_name));
 
-    const std::filesystem::path lo_svc_path  = mo_out_dir / (ls_base + ".p8svc");
-    const std::filesystem::path lo_data_path = mo_out_dir / (ls_base + ".p8dat");
+    // per-run subdirectory: process name + pid + UTC timestamp, keeps output of
+    // different processes/runs sharing one OutDir cleanly separated
+    const std::string ls_run_dir
+        = std::string(la_proc_name) + "_" + std::to_string(kit::get_process_id()) + "_" + la_stamp;
+
+    const std::filesystem::path lo_run_dir = mo_out_dir / ls_run_dir;
+
+    std::error_code lo_ec;
+    std::filesystem::create_directories(lo_run_dir, lo_ec);
+    if(lo_ec)
+    {
+        std::fprintf(stderr,
+                     "cp8_sink_file::open: failed to create output directory %s: %s\n",
+                     lo_run_dir.string().c_str(),
+                     lo_ec.message().c_str());
+        return false;
+    }
+
+    std::fprintf(stdout, "cp8_sink_file output directory %s\n", lo_run_dir.string().c_str());
+
+    // session-unique base name: UTC timestamp guards against filename collisions
+    // within the per-run subdirectory
+    const std::string ls_base                = std::string("p8_") + la_stamp;
+
+    const std::filesystem::path lo_svc_path  = lo_run_dir / (ls_base + ".p8svc");
+    const std::filesystem::path lo_data_path = lo_run_dir / (ls_base + ".p8dat");
 
     if(!mo_svc_file.open(lo_svc_path, kit::e_fom_create_new, kit::e_ff_write))
     {
