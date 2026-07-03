@@ -100,6 +100,10 @@ uint8_t *cp8_buffer_pool::acquire(uint8_t &or_uAcquiredPercentage)
     // allocation, not the shared budget, so budget-less pools work too.
     size_t lz_total         = mo_all.size() * mz_buffer_size;
     or_uAcquiredPercentage  = (lz_total > 0) ? (uint8_t)(mz_acquired * 100u / lz_total) : 0;
+    if(or_uAcquiredPercentage > 75)
+    {
+        printf("~%zu/%zu~\n", mz_acquired, lz_total);
+    }
 
     return mo_free.pull_first();
 }

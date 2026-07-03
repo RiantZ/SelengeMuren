@@ -20,6 +20,15 @@
             "preLaunchTask": "cmake-build-debug-tests"
         },
         {
+            "name": "Debug example: logs_file_sink",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/_Build_mac_debug/examples/logs_file_sink/p8_example_multithread_file_sink",
+            "args": ["${workspaceFolder}/_Build_mac_debug/example_logs"],
+            "cwd": "${workspaceFolder}/_Build_mac_debug",
+            "preLaunchTask": "cmake-build-debug-example-logs-file-sink"
+        },
+        {
             "name": "Debug Current Test (pytest)",
             "type": "debugpy",
             "request": "launch",

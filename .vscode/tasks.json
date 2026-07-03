@@ -23,6 +23,20 @@
             "dependsOn": ["cmake-configure-debug"],
             "group": { "kind": "build", "isDefault": true },
             "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "cmake-build-debug-example-logs-file-sink",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/_Build_mac_debug",
+                "--target",
+                "p8_example_multithread_file_sink"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "dependsOn": ["cmake-configure-debug"],
+            "problemMatcher": ["$gcc"]
         }
     ]
 }
