@@ -33,12 +33,14 @@ nlohmann::json make_config(const std::filesystem::path &ir_out_dir)
     return lo_json;
 }
 
-/// @brief The single file under ir_dir with extension ir_ext, or an empty path if none/multiple.
+/// @brief The single file under ir_dir (searched recursively, since the sink
+/// nests its output in a per-run subdirectory) with extension ir_ext, or an
+/// empty path if none/multiple.
 std::filesystem::path find_file_with_ext(const std::filesystem::path &ir_dir, const std::string &ir_ext)
 {
     std::filesystem::path lo_found;
     size_t                lz_count = 0;
-    for(const auto &lo_entry : std::filesystem::directory_iterator(ir_dir))
+    for(const auto &lo_entry : std::filesystem::recursive_directory_iterator(ir_dir))
     {
         if(lo_entry.path().extension() == ir_ext)
         {

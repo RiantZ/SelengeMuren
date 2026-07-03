@@ -317,7 +317,7 @@ TEST_F(c_p8_core_test, file_bin_sink_writes_service_data_end_to_end)
     ASSERT_TRUE(std::filesystem::exists(lo_out_dir));
 
     bool lb_found_nonempty_svc = false;
-    for(const auto &lo_entry : std::filesystem::directory_iterator(lo_out_dir))
+    for(const auto &lo_entry : std::filesystem::recursive_directory_iterator(lo_out_dir))
     {
         if(lo_entry.path().extension() == ".p8svc" && std::filesystem::file_size(lo_entry.path()) > 0)
         {
