@@ -458,22 +458,32 @@ void cp8_core::worker_main()
         lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
                       kit::e_c_lst_pool_policy::e_keep);
 
-        // move buffers from list protected by mutex to local one
-        mo_ready_lock.lock();
-        while(mo_ready_queue.size() > 0)
-        {
-            lo_ready.push_last(mo_ready_queue.pull_first());
-        }
-        mo_ready_lock.unlock();
-        //--------------------------------------------------------
+#ifdef P8_TESTING
+        // While capture is active the synchronous test drain is the sole data
+        // consumer; the worker must not touch data buffers or it would race on
+        // the captured-buffer store.
+        const bool lb_skip_data = mb_capture_enabled.load(std::memory_order_relaxed);
+#else
+        constexpr bool lb_skip_data = false;
+#endif
 
-        if(lo_ready.size() > 0)
+        if(!lb_skip_data)
         {
-            mp_sink->write_data(lo_ready);
-        }
+            // move buffers from the ready queue (writer-shutdown path) to local one
+            mo_ready_lock.lock();
+            while(mo_ready_queue.size() > 0)
+            {
+                lo_ready.push_last(mo_ready_queue.pull_first());
+            }
+            mo_ready_lock.unlock();
+            //--------------------------------------------------------
 
-        // recycle the consumed data buffers back to the pool
-        lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+            // pull accumulated buffers from every live writer into the same batch
+            drain_writers(lo_ready);
+
+            // write the batch to the sink and recycle it (single capture point)
+            flush_ready(lo_ready);
+        }
 
         mp_sink->flush();
 
@@ -650,7 +660,23 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    return mp_data_pool->acquire();
+    uint8_t  lu_AcquiredPercentage = 100;
+    uint8_t *lp_buf                = mp_data_pool->acquire(lu_AcquiredPercentage);
+    if(!lp_buf)
+    {
+        return nullptr;
+    }
+
+    mu_outstanding_buffers.fetch_add(1, std::memory_order_relaxed);
+
+    // Track pool pressure: when outstanding buffers reach P8_CORE_DRAIN_PERCENT
+    // of the allocated pool, wake the worker so it pulls from all writers.
+    if(lu_AcquiredPercentage >= P8_CORE_DRAIN_PERCENT)
+    {
+        notify();
+    }
+
+    return lp_buf;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -662,6 +688,7 @@ void cp8_core::release_buffer(uint8_t *ip_buffer)
     }
 
     mp_data_pool->recycle(ip_buffer);
+    mu_outstanding_buffers.fetch_sub(1, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -677,7 +704,7 @@ void cp8_core::release_buffers(kit::c_lst<uint8_t *> &io_buffers)
         return;
     }
 
-    io_buffers.clear([this](uint8_t *ip_buf) { mp_data_pool->recycle(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+    io_buffers.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -687,14 +714,6 @@ void cp8_core::submit_buffer(uint8_t *ip_buffer)
     {
         return;
     }
-
-#ifdef P8_TESTING
-    if(mb_capture_enabled)
-    {
-        std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
-        mo_captured_buffers.emplace_back(ip_buffer, ip_buffer + mz_data_buffer_size);
-    }
-#endif
 
     {
         std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
@@ -720,22 +739,53 @@ void cp8_core::submit_chain(kit::c_lst<uint8_t *> &io_buffers)
     {
         std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
 
-        io_buffers.clear(
-            [this](uint8_t *ip_buf)
-            {
-#ifdef P8_TESTING
-                if(mb_capture_enabled)
-                {
-                    std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
-                    mo_captured_buffers.emplace_back(ip_buf, ip_buf + mz_data_buffer_size);
-                }
-#endif
-                mo_ready_queue.push_last(ip_buf);
-            },
-            kit::e_c_lst_pool_policy::e_keep);
+        io_buffers.clear([this](uint8_t *ip_buf) { mo_ready_queue.push_last(ip_buf); },
+                         kit::e_c_lst_pool_policy::e_keep);
     }
 
     notify();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
+{
+    if(!mb_initialized)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
+
+    for(cp8_tls_writer *lp_writer = mp_writers_head; lp_writer; lp_writer = lp_writer->mp_next_writer)
+    {
+        lp_writer->pull(io_data);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
+{
+    if(0 == io_ready.size())
+    {
+        return;
+    }
+
+#ifdef P8_TESTING
+    if(mb_capture_enabled.load(std::memory_order_relaxed))
+    {
+        std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
+        for(auto lo_it = io_ready.cbegin(); lo_it != io_ready.cend(); ++lo_it)
+        {
+            uint8_t *lp_buf = *lo_it;
+            mo_captured_buffers.emplace_back(lp_buf, lp_buf + mz_data_buffer_size);
+        }
+    }
+#endif
+
+    mp_sink->write_data(io_ready);
+
+    // recycle the consumed data buffers back to the pool
+    io_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1173,26 +1223,6 @@ size_t p8_test_get_free_buffers_count()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_total_allocated()
-{
-    if(!gp_instance || !gp_instance->mp_data_pool)
-    {
-        return 0;
-    }
-    return gp_instance->mp_data_pool->get_total_allocated();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_all_buffers_count()
-{
-    if(!gp_instance || !gp_instance->mp_data_pool)
-    {
-        return 0;
-    }
-    return gp_instance->mp_data_pool->get_total_allocated() / gp_instance->mz_data_buffer_size;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 uint8_t *p8_test_acquire_buffer()
 {
     return gp_instance ? gp_instance->acquire_buffer() : nullptr;
@@ -1305,6 +1335,34 @@ std::vector<std::vector<uint8_t>> p8_test_get_service_buffers()
         return {};
     }
     return gp_instance->get_service_buffers();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+size_t p8_test_get_outstanding_buffers()
+{
+    return gp_instance ? gp_instance->mu_outstanding_buffers.load(std::memory_order_relaxed) : 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void p8_test_drain_writers()
+{
+    if(!gp_instance)
+    {
+        return;
+    }
+
+    kit::c_lst<uint8_t *> lo_ready;
+
+    // include the writer-shutdown ready queue so the drain is exhaustive
+    gp_instance->mo_ready_lock.lock();
+    while(gp_instance->mo_ready_queue.size() > 0)
+    {
+        lo_ready.push_last(gp_instance->mo_ready_queue.pull_first());
+    }
+    gp_instance->mo_ready_lock.unlock();
+
+    gp_instance->drain_writers(lo_ready);
+    gp_instance->flush_ready(lo_ready);
 }
 
 #endif // P8_TESTING

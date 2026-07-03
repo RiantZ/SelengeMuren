@@ -37,7 +37,11 @@ static s_log_content_parsed parse_captured_buffers()
 {
     s_log_content_parsed lo_result = {};
 
-    const auto &lo_bufs            = p8_test_get_captured_buffers();
+    // Writers now retain buffers locally; force a synchronous drain so the
+    // captured set is deterministic instead of racing the worker thread.
+    p8_test_drain_writers();
+
+    const auto &lo_bufs = p8_test_get_captured_buffers();
     if(lo_bufs.empty())
     {
         return lo_result;
@@ -137,6 +141,10 @@ struct s_parsed_item
 static std::vector<s_parsed_item> parse_all_items()
 {
     std::vector<s_parsed_item> lo_items;
+
+    // Writers now retain buffers locally; force a synchronous drain so the
+    // captured set is deterministic instead of racing the worker thread.
+    p8_test_drain_writers();
 
     const auto &lo_bufs = p8_test_get_captured_buffers();
     if(lo_bufs.empty())

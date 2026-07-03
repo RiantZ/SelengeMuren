@@ -128,6 +128,26 @@ void cp8_tls_writer::core_push()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_tls_writer::pull(kit::c_lst<uint8_t *> &io_data)
+{
+    std::lock_guard<kit::c_spin_lock> lo_guard(*mp_lock);
+
+    // Move the finalized fragment/complete-record buffers first to preserve the
+    // logical write order, then fold the in-progress tail buffer in behind them.
+    while(mo_fragments.size() > 0)
+    {
+        io_data.push_last(mo_fragments.pull_first());
+    }
+
+    if(mp_buffer)
+    {
+        io_data.push_last(mp_buffer);
+        mp_buffer   = nullptr;
+        mz_buf_used = 0;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 s_p8_attrs_result cp8_tls_writer::serialize_attrs(uint8_t                    *op_dst,
                                                   const uint8_t              *ip_buf_end,
                                                   const struct s_p8_attr_val *ip_attrs,

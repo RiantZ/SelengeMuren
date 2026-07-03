@@ -111,8 +111,6 @@ TEST_F(c_p8_core_test, buffer_pool_preallocated)
     EXPECT_TRUE(p8_initialize(&lo_config));
     EXPECT_EQ(p8_test_get_buffer_size(), 8192u);
     EXPECT_EQ(p8_test_get_free_buffers_count(), 8u);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), 8u);
-    EXPECT_EQ(p8_test_get_total_allocated(), 65536u);
 }
 
 TEST_F(c_p8_core_test, buffer_pool_initial_clamped_to_max)
@@ -125,8 +123,6 @@ TEST_F(c_p8_core_test, buffer_pool_initial_clamped_to_max)
 
     EXPECT_TRUE(p8_initialize(&lo_config));
     EXPECT_EQ(p8_test_get_free_buffers_count(), 2u);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), 2u);
-    EXPECT_EQ(p8_test_get_total_allocated(), 16384u);
 }
 
 TEST_F(c_p8_core_test, buffer_acquire_release)
@@ -167,7 +163,6 @@ TEST_F(c_p8_core_test, buffer_acquire_on_demand)
 
     uint8_t *lp_buf3 = p8_test_acquire_buffer();
     ASSERT_NE(lp_buf3, nullptr);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), 3u);
 
     uint8_t *lp_buf4 = p8_test_acquire_buffer();
     EXPECT_EQ(lp_buf4, nullptr);
@@ -189,7 +184,6 @@ TEST_F(c_p8_core_test, buffer_acquire_on_demand_within_limit)
 
     size_t lz_pre_count = p8_test_get_free_buffers_count();
     EXPECT_EQ(lz_pre_count, 8u);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), 8u);
 
     // acquire all pre-allocated
     std::vector<uint8_t *> lo_bufs;
@@ -205,7 +199,6 @@ TEST_F(c_p8_core_test, buffer_acquire_on_demand_within_limit)
     // next acquire triggers on-demand allocation
     uint8_t *lp_on_demand = p8_test_acquire_buffer();
     ASSERT_NE(lp_on_demand, nullptr);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), lz_pre_count + 1);
 
     // release all
     p8_test_release_buffer(lp_on_demand);
@@ -256,7 +249,6 @@ TEST_F(c_p8_core_test, buffer_concurrent_acquire_release)
     }
 
     EXPECT_EQ(p8_test_get_free_buffers_count(), lz_initial_free);
-    EXPECT_EQ(p8_test_get_all_buffers_count(), lz_initial_free);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

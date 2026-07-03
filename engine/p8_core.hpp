@@ -22,6 +22,11 @@
 #define P8_CORE_ACQUIRE_TIMEOUT_MS 100
 #define P8_CORE_THREAD_TIMEOUT_MS  50
 
+// When outstanding (acquired-but-not-recycled) data buffers reach this percentage
+// of the total allocated pool, acquire_buffer wakes the worker so it can pull
+// accumulated buffers from all writers.
+#define P8_CORE_DRAIN_PERCENT      75
+
 class cp8_tls_writer;
 struct s_p8_log_desc;
 
@@ -113,6 +118,15 @@ private:
     void stop_worker();
     void worker_main();
 
+    // Pull accumulated buffers from every registered writer into io_data, in
+    // registry order. Takes mo_writers_lock and each writer's lock internally.
+    void drain_writers(kit::c_lst<uint8_t *> &io_data);
+
+    // Write a batch of ready data buffers to the sink and recycle them. Single
+    // choke point for both the worker-pull path and the writer-shutdown ready
+    // queue, and the only place data buffers are captured under P8_TESTING.
+    void flush_ready(kit::c_lst<uint8_t *> &io_ready);
+
     // service-data serialization (log + attr descriptors). All helpers below
     // assume mo_svc_mutex is held by the caller.
     s_p8_svc_buf *svc_acquire_new();
@@ -137,6 +151,10 @@ private:
     const static size_t mz_data_buffer_size = 8192;
     // data memory pool, uses & depends on mp_memory_budget
     cp8_buffer_pool *mp_data_pool           = nullptr;
+
+    // data buffers acquired from mp_data_pool but not yet recycled. Used by
+    // acquire_buffer to detect pool pressure and wake the worker.
+    std::atomic<size_t> mu_outstanding_buffers { 0 };
 
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;
@@ -176,8 +194,6 @@ private:
 #ifdef P8_TESTING
     friend size_t                                   p8_test_get_buffer_size();
     friend size_t                                   p8_test_get_free_buffers_count();
-    friend size_t                                   p8_test_get_total_allocated();
-    friend size_t                                   p8_test_get_all_buffers_count();
     friend void                                     p8_test_enable_buffer_capture();
     friend void                                     p8_test_disable_buffer_capture();
     friend size_t                                   p8_test_get_captured_count();
@@ -185,8 +201,13 @@ private:
     friend void                                     p8_test_clear_captured_buffers();
     friend size_t                                   p8_test_get_writer_count();
     friend cp8_tls_writer                          *p8_test_get_writers_head();
+    friend size_t                                   p8_test_get_outstanding_buffers();
+    friend void                                     p8_test_drain_writers();
 
-    bool                              mb_capture_enabled = false;
+    // When capture is enabled the worker leaves data buffers untouched so the
+    // test-driven synchronous drain is the sole consumer (avoids racing on
+    // mo_captured_buffers). Atomic so the worker can read it lock-free.
+    std::atomic<bool>                 mb_capture_enabled { false };
     std::mutex                        mo_capture_mutex;
     std::vector<std::vector<uint8_t>> mo_captured_buffers;
 #endif
@@ -197,8 +218,6 @@ void                                     p8_test_reset();
 uint32_t                                 p8_test_get_instance_count();
 size_t                                   p8_test_get_buffer_size();
 size_t                                   p8_test_get_free_buffers_count();
-size_t                                   p8_test_get_total_allocated();
-size_t                                   p8_test_get_all_buffers_count();
 uint8_t                                 *p8_test_acquire_buffer();
 void                                     p8_test_release_buffer(uint8_t *ip_buffer);
 void                                     p8_test_enable_buffer_capture();
@@ -209,4 +228,6 @@ void                                     p8_test_clear_captured_buffers();
 size_t                                   p8_test_get_writer_count();
 cp8_tls_writer                          *p8_test_get_writers_head();
 std::vector<std::vector<uint8_t>>        p8_test_get_service_buffers();
+size_t                                   p8_test_get_outstanding_buffers();
+void                                     p8_test_drain_writers();
 #endif

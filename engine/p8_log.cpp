@@ -406,6 +406,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     size_t             lz_args_written  = 0;
     size_t             lz_attrs_written = 0;
     uint8_t            lu_attrs_count   = 0;
+    size_t             lz_frag_commit   = 0;
 
     // TODO: need to store in s_p8_log_item_hdr
     // TODO: need to check verbosity and drop if below min verbosity
@@ -418,12 +419,14 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         return false;
     }
 
-    // buffer availability check — reuse current buffer when possible
+    // buffer availability check — reuse current buffer when possible. A full
+    // buffer is parked in mo_fragments (not submitted); the worker drains it
+    // later via pull().
     if(mp_buffer) [[likely]]
     {
         if((mz_buf_max - mz_buf_used) < (P8_LOG_MIN_BUFFER_SPACE + sizeof(s_p8_log_item_dat))) [[unlikely]]
         {
-            mp_core->submit_buffer(mp_buffer);
+            mo_fragments.push_last(mp_buffer);
             mp_buffer = nullptr;
         }
     }
@@ -463,6 +466,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         }
         mo_desc_map[lu_hash] = lp_desc;
     }
+
+    // Mark the fragment-list boundary for this record. Any buffer parked past
+    // this point belongs to the record being serialized now, so a mid-record
+    // failure can roll back exactly this record without touching earlier ones.
+    lz_frag_commit = mo_fragments.size();
 
     // write item header
     {
@@ -670,48 +678,33 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_buf_hdr->mu_stop_time             = lp_hdr->mu_timestamp;
     }
 
-    // Hand off in a single locked submit: the current buffer is only released
-    // when it can no longer fit another item (< P8_LOG_MIN_BUFFER_SPACE left),
-    // otherwise it is kept for the next record. When it is released alongside
-    // fragments, fold it into the chain so the whole record ships as one bundle.
-    // Scoped so lb_buf_full does not span the goto into lbl_discard.
+    // Keep the buffers local: the worker drains them later via pull(). When the
+    // current buffer can no longer fit another item (< P8_LOG_MIN_BUFFER_SPACE
+    // left) park it in mo_fragments so the next record starts on a fresh buffer;
+    // otherwise keep it for the next record.
+    if((mz_buf_max - mz_buf_used) < P8_LOG_MIN_BUFFER_SPACE) [[unlikely]]
     {
-        const bool lb_buf_full = (mz_buf_max - mz_buf_used) < P8_LOG_MIN_BUFFER_SPACE;
-
-        if(mo_fragments.size() > 0)
-        {
-            if(lb_buf_full) [[unlikely]]
-            {
-                mo_fragments.push_last(mp_buffer);
-                mp_buffer   = nullptr;
-                mz_buf_used = 0;
-            }
-            mp_core->submit_chain(mo_fragments);
-        }
-        else if(lb_buf_full) [[unlikely]]
-        {
-            mp_core->submit_buffer(mp_buffer);
-            mp_buffer   = nullptr;
-            mz_buf_used = 0;
-        }
+        mo_fragments.push_last(mp_buffer);
+        mp_buffer   = nullptr;
+        mz_buf_used = 0;
     }
 
     return true;
 
 lbl_discard:
-    // rotate_fragment_buffer failed — finalize partial item and release
+    // rotate_fragment_buffer failed — finalize partial item and roll back only
+    // the buffers this record added, leaving earlier complete records intact.
     lp_hdr->mu_args_size   = static_cast<uint16_t>(lz_args_written);
     lp_hdr->mu_attrs_count = lu_attrs_count;
     lp_hdr->mu_size        = static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
 
-    if(mo_fragments.size() > 0)
+    while(mo_fragments.size() > lz_frag_commit)
     {
-        // incomplete logical record (FRAGMENT chain without a closing buffer):
-        // recycle instead of submitting so the consumer never sees a partial chain
-        mp_core->release_buffers(mo_fragments);
+        mp_core->release_buffer(mo_fragments.pull_last());
     }
     mp_buffer   = nullptr;
     mz_buf_used = 0;
+    ++mu_dropped_records;
 
     return false;
 }
@@ -795,3 +788,11 @@ extern "C"
     }
 
 } // extern "C"
+
+#ifdef P8_TESTING
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint64_t p8_test_get_tls_dropped_records()
+{
+    return go_tls_log.get_dropped_records();
+}
+#endif
