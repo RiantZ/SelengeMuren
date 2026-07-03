@@ -27,6 +27,22 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "macos",
+      "binaryDir": "${sourceDir}/_Build_mac_debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "linux",
+      "binaryDir": "${sourceDir}/_Build_lnx_debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     }
+  ],
+  "buildPresets": [
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" }
   ]
 }

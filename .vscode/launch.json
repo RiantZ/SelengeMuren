@@ -2,7 +2,34 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Current Test",
+            "name": "Debug C++ tests (all)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/_Build_mac_debug/tests/regression/P8_RegressionTests",
+            "args": [],
+            "cwd": "${workspaceFolder}/_Build_mac_debug",
+            "preLaunchTask": "cmake-build-debug-tests"
+        },
+        {
+            "name": "Debug C++ tests (by filter)",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/_Build_mac_debug/tests/regression/P8_RegressionTests",
+            "args": ["--gtest_filter=${input:gtestFilter}"],
+            "cwd": "${workspaceFolder}/_Build_mac_debug",
+            "preLaunchTask": "cmake-build-debug-tests"
+        },
+        {
+            "name": "Debug example: logs_file_sink",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/_Build_mac_debug/examples/logs_file_sink/p8_example_multithread_file_sink",
+            "args": ["${workspaceFolder}/_Build_mac_debug/example_logs"],
+            "cwd": "${workspaceFolder}/_Build_mac_debug",
+            "preLaunchTask": "cmake-build-debug-example-logs-file-sink"
+        },
+        {
+            "name": "Debug Current Test (pytest)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -10,6 +37,14 @@
             "python": "${command:python.interpreterPath}",
             "console": "integratedTerminal",
             "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "gtestFilter",
+            "type": "promptString",
+            "description": "GoogleTest filter (e.g. c_log_content_test.*)",
+            "default": "*"
         }
     ]
 }

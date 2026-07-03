@@ -34,21 +34,20 @@ public:
 
     // Acquires a free buffer from the pool. Returns nullptr when the budget
     // is exhausted or the underlying allocator fails.
-    uint8_t *acquire();
+    uint8_t *acquire(uint8_t &or_uAcquiredPercentage);
 
     // Returns a previously-acquired buffer to the free list.
     // Released memory is kept in the pool — it is not given back to the OS.
     void recycle(uint8_t *ip_buf);
 
     size_t get_buffer_size() const;
-    size_t get_total_allocated() const;
     size_t get_free_count();
 
 private:
     size_t                             mz_buffer_size;
+    size_t                             mz_acquired = 0;
     std::shared_ptr<cp8_memory_budget> mp_budget;
     kit::c_lst<uint8_t *>              mo_free;
     kit::c_lst<uint8_t *>              mo_all;
-    std::atomic<size_t>                mu_total_allocated { 0 };
     std::mutex                         mo_mutex;
 };

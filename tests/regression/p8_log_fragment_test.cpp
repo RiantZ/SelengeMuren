@@ -1,6 +1,7 @@
 #include "p8_client_api.h"
 #include "p8_core.hpp"
 #include "p8_config_keys.hpp"
+#include "p8_log.hpp"
 #include "p8_protocol.h"
 
 #include <gtest/gtest.h>
@@ -176,27 +177,31 @@ TEST_F(c_log_fragment_test, discard_when_pool_exhausted)
     ASSERT_TRUE(p8_initialize(&lo_config));
     ASSERT_EQ(p8_test_get_free_buffers_count(), 1u);
 
-    bool        lb_result = true;
+    bool        lb_result  = true;
+    uint64_t    lu_dropped = 0;
     std::thread lo_thread(
-        [&lb_result]()
+        [&lb_result, &lu_dropped]()
         {
             size_t      lz_buf_sz = p8_test_get_buffer_size();
             std::string lo_huge(lz_buf_sz * 2, 'D');
 
-            lb_result = p8_log_sent(e_p8_trace0,
-                                    nullptr,
-                                    0,
-                                    static_cast<uint32_t>(__LINE__),
-                                    __FILE__,
-                                    __FUNCTION__,
-                                    0,
-                                    nullptr,
-                                    "%s",
-                                    lo_huge.c_str());
+            lb_result  = p8_log_sent(e_p8_trace0,
+                                     nullptr,
+                                     0,
+                                     static_cast<uint32_t>(__LINE__),
+                                     __FILE__,
+                                     __FUNCTION__,
+                                     0,
+                                     nullptr,
+                                     "%s",
+                                     lo_huge.c_str());
+            lu_dropped = p8_test_get_tls_dropped_records();
         });
     lo_thread.join();
 
     EXPECT_FALSE(lb_result);
+    // the discarded record must be accounted for in the per-writer counter
+    EXPECT_EQ(lu_dropped, 1u);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

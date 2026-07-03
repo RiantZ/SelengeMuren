@@ -19,7 +19,8 @@ extern "C"
 #endif
 
 #define P8_PACKET_MAX_SIZE      (1 << 16) // 64KB max page
-//
+
+// WARNING: THIS IS THE FIRST BYTE IN EVERY PACKET
 #define P8_PACKET_MAIN          0 // hello/handshake packet carrying s_p8_hdr (first packet on a connection)
 #define P8_PACKET_LOGS          1 // log records buffer (s_p8_data_buf_hdr + s_p8_log_item_dat stream)
 #define P8_PACKET_TRACES        2 // distributed-trace spans buffer
@@ -109,9 +110,9 @@ extern "C"
     // Header of every service entry inside a P8_PACKET_SERVICE buffer (4 bytes).
     struct s_p8_svc_hdr
     {
-        uint8_t  mu_type;  // P8_SVC_TYPE_XXX
-        uint8_t  mu_flags; // not used for the time being
-        uint16_t mu_size;  // size including header
+        uint8_t  mu_packet_type; // P8_PACKET_SERVICE
+        uint8_t  mu_svc_type;    // P8_SVC_TYPE_XXX
+        uint16_t mu_size;        // size including header
     };
 
     // Serialized representation of s_p8_attr_desc
@@ -150,7 +151,7 @@ extern "C"
     // Header of EVERY data buffer: logs, traces, metrics
     struct s_p8_data_buf_hdr
     {
-        uint8_t  mu_packet_type; // P8_PACKET_XXXX
+        uint8_t  mu_packet_type; // P8_PACKET_LOGS or P8_PACKET_TRACES or P8_PACKET_METRICS
         uint8_t  mu_flags;       // P8_DATA_FLAG_XXX
         uint16_t mu_size;        // size in bytes
         uint32_t mu_thread_id;   // thread ID which emits data
@@ -185,14 +186,14 @@ extern "C"
         uint8_t  mu_processor; // CPU core ID
         uint16_t mu_args_size; // serialized variable arguments size in bytes
 
-        // 64 bits
-        uint32_t mu_size;         // total item size in bytes (header + args + attrs)
-        uint16_t mu_attrs_count;  // number of serialized attributes
-        uint8_t  mu_padding_size; // log item data is alligned in 8 bytes, the value is padding length in bytes
-        uint8_t  mu_flags;        // todo
+        // 32 bits
+        uint16_t mu_size;        // total item size in bytes (header + args + attrs + padding)
+        uint8_t  mu_attrs_count; // number of serialized attributes
+        uint8_t  mu_flags;       // todo
         //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...
         //* Serialized attributes [p8_attr_id + data][...]
-        //* padding to aling size on 8 bytes boundary
+        //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b
+        // alignement
     };
 
 #ifdef __cplusplus

@@ -32,6 +32,12 @@ protected:
 
     void core_push();
 
+    // Hand every buffer currently held by this writer (the finalized entries in
+    // mo_fragments plus the in-progress tail mp_buffer) over to io_data in
+    // logical order, then reset the writer so the next record starts fresh. The
+    // owning lock is taken internally, so this never races with send().
+    void pull(kit::c_lst<uint8_t *> &io_data);
+
     static size_t serialize_utf8_string(uint8_t *op_dst, size_t iz_avail, const char *ip_str);
 
     bool copy_fragmented(uint8_t   *&io_dst,

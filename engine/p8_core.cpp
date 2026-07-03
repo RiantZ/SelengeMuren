@@ -2,6 +2,8 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_sink_file.hpp"
+#include "p8_sink_null.hpp"
 #include "p8_tls_writer.hpp"
 
 #include "kit/endian.hpp"
@@ -92,6 +94,39 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Create a heap sink for the requested kind; the caller owns it and must delete
+// it. Unimplemented kinds (net) and unrecognized values currently return nullptr;
+// the caller falls back to a null sink.
+static cp8_sink_iface *create_sink(const char *ip_value, const nlohmann::json &ir_config)
+{
+    if(!ip_value)
+    {
+        // No sink configured: default to the null sink.
+        std::fprintf(stderr, "create_sink: warning! default null sinc is created\n");
+        return new(std::nothrow) cp8_sink_null();
+    }
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_FILE_BIN) == 0)
+    {
+        return new(std::nothrow) cp8_sink_file(ir_config);
+    }
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_NETWORK_TCP) == 0)
+    {
+        std::fprintf(stderr, "create_sink: network sink not implemented yet, falling back to null sink\n");
+        return nullptr;
+    }
+
+    if(strcmp(ip_value, P8_CFG_VAL_SINK_NETWORK_NULL) == 0)
+    {
+        return new(std::nothrow) cp8_sink_null();
+    }
+
+    std::fprintf(stderr, "create_sink: unrecognized sinc type %s\n", ip_value);
+    return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // cp8_core implementation
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -126,16 +161,6 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
         return;
     }
 
-    if(lo_json.contains(P8_CFG_KEY_SINK))
-    {
-        // TODO: configure sync mode (file.bin, network.tcp)
-    }
-
-    if(lo_json.contains(P8_CFG_KEY_DESTINATION))
-    {
-        // TODO: configure destination path or network endpoint
-    }
-
     std::string ls_max_mem;
     std::string ls_init_mem;
 
@@ -157,6 +182,39 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
 
     init_header(ip_config);
 
+    std::string ls_sink_value;
+
+    if(lo_json.contains(P8_CFG_KEY_SINK))
+    {
+        ls_sink_value = lo_json[P8_CFG_KEY_SINK].get<std::string>();
+    }
+
+    mp_sink = create_sink(ls_sink_value.empty() ? nullptr : ls_sink_value.c_str(), lo_json);
+    if(!mp_sink)
+    {
+        std::fprintf(stderr, "cp8_core: sink allocation failed\n");
+        return;
+    }
+
+    if(!mp_sink->open())
+    {
+        std::fprintf(stderr, "cp8_core: sink open failed, falling back to null sink\n");
+        delete mp_sink;
+        mp_sink = new(std::nothrow) cp8_sink_null();
+        if(!mp_sink || !mp_sink->open())
+        {
+            std::fprintf(stderr, "cp8_core: fallback null sink failed\n");
+            delete mp_sink;
+            mp_sink = nullptr;
+            return;
+        }
+    }
+
+    if(!mp_sink->write_hello(mo_hdr))
+    {
+        std::fprintf(stderr, "cp8_core: sink write_hello failed\n");
+    }
+
     mb_initialized = true;
 
     start_worker();
@@ -166,6 +224,14 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
 cp8_core::~cp8_core()
 {
     stop_worker();
+
+    // the final drain ran inside stop_worker(); release the sink afterwards
+    if(mp_sink)
+    {
+        mp_sink->close();
+        delete mp_sink;
+        mp_sink = nullptr;
+    }
 
     for(auto &lo_pair : mo_log_descs)
     {
@@ -364,6 +430,9 @@ void cp8_core::stop_worker()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::worker_main()
 {
+    kit::c_lst<uint8_t *>    lo_ready;
+    kit::c_lst<s_p8_svc_buf> lo_bufs;
+
     // best-effort: raising priority typically needs elevated privileges, failure is non-fatal
     kit::set_thread_priority(kit::e_tp_time_critical);
 
@@ -371,17 +440,57 @@ void cp8_core::worker_main()
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
 
-        if(lu_signal == mu_event_stop)
+        // move buffers from list protected by mutex to local one
+        mo_svc_mutex.lock();
+        while(mo_svc_buffers.size())
         {
-            // final drain: consume anything submitted between the last iteration and stop,
-            // including the current partial service buffer so tail data is not lost
-            do_iteration();
-            drain_service_buffers();
-            break;
+            lo_bufs.push_last(mo_svc_buffers.pull_first());
+        }
+        mo_svc_mutex.unlock();
+        //--------------------------------------------------------
+
+        if(lo_bufs.size() > 0)
+        {
+            mp_sink->write_service(lo_bufs);
         }
 
-        // lu_signal == mu_event_wake (external event) or c_event::timeout
-        do_iteration();
+        // recycle the consumed service buffers back to the pool
+        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
+                      kit::e_c_lst_pool_policy::e_keep);
+
+#ifdef P8_TESTING
+        // While capture is active the synchronous test drain is the sole data
+        // consumer; the worker must not touch data buffers or it would race on
+        // the captured-buffer store.
+        const bool lb_skip_data = mb_capture_enabled.load(std::memory_order_relaxed);
+#else
+        constexpr bool lb_skip_data = false;
+#endif
+
+        if(!lb_skip_data)
+        {
+            // move buffers from the ready queue (writer-shutdown path) to local one
+            mo_ready_lock.lock();
+            while(mo_ready_queue.size() > 0)
+            {
+                lo_ready.push_last(mo_ready_queue.pull_first());
+            }
+            mo_ready_lock.unlock();
+            //--------------------------------------------------------
+
+            // pull accumulated buffers from every live writer into the same batch
+            drain_writers(lo_ready);
+
+            // write the batch to the sink and recycle it (single capture point)
+            flush_ready(lo_ready);
+        }
+
+        mp_sink->flush();
+
+        if(lu_signal == mu_event_stop)
+        {
+            break;
+        }
     }
 }
 
@@ -389,30 +498,6 @@ void cp8_core::worker_main()
 void cp8_core::notify()
 {
     mo_worker_event.set(mu_event_wake);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::do_iteration()
-{
-    // TODO: replace by long living object to save on memory allocations
-    //  move the ready-queue out under the lock, then recycle outside it so
-    //  the (heavier) pool work never runs while producers are waiting on the lock
-    kit::c_lst<uint8_t *> lo_ready;
-
-    {
-        std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
-
-        while(mo_ready_queue.size() > 0)
-        {
-            lo_ready.push_last(mo_ready_queue.pull_first());
-        }
-    }
-
-    // stub consumption: no sink yet — recycle straight back to the pool
-    lo_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
-
-    // drain full service buffers; the current in-progress one stays until it fills
-    drain_service_buffers();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -575,7 +660,23 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    return mp_data_pool->acquire();
+    uint8_t  lu_AcquiredPercentage = 100;
+    uint8_t *lp_buf                = mp_data_pool->acquire(lu_AcquiredPercentage);
+    if(!lp_buf)
+    {
+        return nullptr;
+    }
+
+    mu_outstanding_buffers.fetch_add(1, std::memory_order_relaxed);
+
+    // Track pool pressure: when outstanding buffers reach P8_CORE_DRAIN_PERCENT
+    // of the allocated pool, wake the worker so it pulls from all writers.
+    if(lu_AcquiredPercentage >= P8_CORE_DRAIN_PERCENT)
+    {
+        notify();
+    }
+
+    return lp_buf;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -587,6 +688,7 @@ void cp8_core::release_buffer(uint8_t *ip_buffer)
     }
 
     mp_data_pool->recycle(ip_buffer);
+    mu_outstanding_buffers.fetch_sub(1, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -602,7 +704,7 @@ void cp8_core::release_buffers(kit::c_lst<uint8_t *> &io_buffers)
         return;
     }
 
-    io_buffers.clear([this](uint8_t *ip_buf) { mp_data_pool->recycle(ip_buf); });
+    io_buffers.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -612,14 +714,6 @@ void cp8_core::submit_buffer(uint8_t *ip_buffer)
     {
         return;
     }
-
-#ifdef P8_TESTING
-    if(mb_capture_enabled)
-    {
-        std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
-        mo_captured_buffers.emplace_back(ip_buffer, ip_buffer + mz_data_buffer_size);
-    }
-#endif
 
     {
         std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
@@ -645,21 +739,53 @@ void cp8_core::submit_chain(kit::c_lst<uint8_t *> &io_buffers)
     {
         std::lock_guard<std::mutex> lo_guard(mo_ready_lock);
 
-        io_buffers.clear(
-            [this](uint8_t *ip_buf)
-            {
-#ifdef P8_TESTING
-                if(mb_capture_enabled)
-                {
-                    std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
-                    mo_captured_buffers.emplace_back(ip_buf, ip_buf + mz_data_buffer_size);
-                }
-#endif
-                mo_ready_queue.push_last(ip_buf);
-            });
+        io_buffers.clear([this](uint8_t *ip_buf) { mo_ready_queue.push_last(ip_buf); },
+                         kit::e_c_lst_pool_policy::e_keep);
     }
 
     notify();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
+{
+    if(!mb_initialized)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
+
+    for(cp8_tls_writer *lp_writer = mp_writers_head; lp_writer; lp_writer = lp_writer->mp_next_writer)
+    {
+        lp_writer->pull(io_data);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
+{
+    if(0 == io_ready.size())
+    {
+        return;
+    }
+
+#ifdef P8_TESTING
+    if(mb_capture_enabled.load(std::memory_order_relaxed))
+    {
+        std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
+        for(auto lo_it = io_ready.cbegin(); lo_it != io_ready.cend(); ++lo_it)
+        {
+            uint8_t *lp_buf = *lo_it;
+            mo_captured_buffers.emplace_back(lp_buf, lp_buf + mz_data_buffer_size);
+        }
+    }
+#endif
+
+    mp_sink->write_data(io_ready);
+
+    // recycle the consumed data buffers back to the pool
+    io_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -669,7 +795,7 @@ size_t cp8_core::get_buffer_size()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-cp8_core::s_p8_svc_buf *cp8_core::svc_acquire_new()
+s_p8_svc_buf *cp8_core::svc_acquire_new()
 {
     uint8_t *lp_buf = acquire_buffer();
     if(!lp_buf)
@@ -742,14 +868,14 @@ void cp8_core::serialize_attr_desc(const s_p8_attr_desc *ip_desc)
         return;
     }
 
-    s_p8_attr_svc *lp_entry   = reinterpret_cast<s_p8_attr_svc *>(lp_dst);
-    lp_entry->ms_hdr.mu_type  = P8_SVC_TYPE_ATTR;
-    lp_entry->ms_hdr.mu_flags = 0;
-    lp_entry->ms_hdr.mu_size  = static_cast<uint16_t>(lz_padded);
-    lp_entry->mi_id           = ip_desc->mi_id;
-    lp_entry->mu_type         = static_cast<uint8_t>(ip_desc->me_type);
+    s_p8_attr_svc *lp_entry         = reinterpret_cast<s_p8_attr_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_ATTR;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mi_id                 = ip_desc->mi_id;
+    lp_entry->mu_type               = static_cast<uint8_t>(ip_desc->me_type);
 
-    uint8_t *lp_name          = lp_dst + sizeof(s_p8_attr_svc);
+    uint8_t *lp_name                = lp_dst + sizeof(s_p8_attr_svc);
     if(lz_name)
     {
         memcpy(lp_name, ip_desc->mp_name, lz_name);
@@ -788,18 +914,18 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
         return;
     }
 
-    s_p8_log_item_svc *lp_entry = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
-    lp_entry->ms_hdr.mu_type    = P8_SVC_TYPE_LOG_DESC;
-    lp_entry->ms_hdr.mu_flags   = 0;
-    lp_entry->ms_hdr.mu_size    = static_cast<uint16_t>(lz_padded);
-    lp_entry->mu_line           = ip_desc->mu_line;
-    lp_entry->mu_hash           = ip_desc->mu_hash;
-    lp_entry->mu_format_len     = static_cast<uint16_t>(lz_fmt);
-    lp_entry->mu_file_len       = static_cast<uint16_t>(lz_file);
-    lp_entry->mu_function_len   = static_cast<uint16_t>(lz_func);
-    lp_entry->mu_args_count     = static_cast<uint8_t>(lz_args);
+    s_p8_log_item_svc *lp_entry     = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_LOG_DESC;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mu_line               = ip_desc->mu_line;
+    lp_entry->mu_hash               = ip_desc->mu_hash;
+    lp_entry->mu_format_len         = static_cast<uint16_t>(lz_fmt);
+    lp_entry->mu_file_len           = static_cast<uint16_t>(lz_file);
+    lp_entry->mu_function_len       = static_cast<uint16_t>(lz_func);
+    lp_entry->mu_args_count         = static_cast<uint8_t>(lz_args);
 
-    uint8_t *lp_var             = lp_dst + sizeof(s_p8_log_item_svc);
+    uint8_t *lp_var                 = lp_dst + sizeof(s_p8_log_item_svc);
     if(lz_file)
     {
         memcpy(lp_var, ip_desc->mp_file, lz_file);
@@ -820,26 +946,6 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
         memcpy(lp_var, ip_desc->ma_args, lz_args * sizeof(s_p8_log_varg));
     }
     // trailing padding is already zeroed by svc_reserve
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::drain_service_buffers()
-{
-    // TODO: replace by long living object
-    kit::c_lst<uint8_t *> lo_bufs;
-
-    {
-        std::lock_guard<std::mutex> lo_guard(mo_svc_mutex);
-
-        while(mo_svc_buffers.size())
-        {
-            s_p8_svc_buf lo_pair = mo_svc_buffers.pull_first();
-            lo_bufs.push_last(lo_pair.mp_buf);
-        }
-    }
-
-    // stub consumption: no sink yet — recycle straight back to the pool
-    lo_bufs.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); });
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1117,26 +1223,6 @@ size_t p8_test_get_free_buffers_count()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_total_allocated()
-{
-    if(!gp_instance || !gp_instance->mp_data_pool)
-    {
-        return 0;
-    }
-    return gp_instance->mp_data_pool->get_total_allocated();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_all_buffers_count()
-{
-    if(!gp_instance || !gp_instance->mp_data_pool)
-    {
-        return 0;
-    }
-    return gp_instance->mp_data_pool->get_total_allocated() / gp_instance->mz_data_buffer_size;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 uint8_t *p8_test_acquire_buffer()
 {
     return gp_instance ? gp_instance->acquire_buffer() : nullptr;
@@ -1249,6 +1335,34 @@ std::vector<std::vector<uint8_t>> p8_test_get_service_buffers()
         return {};
     }
     return gp_instance->get_service_buffers();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+size_t p8_test_get_outstanding_buffers()
+{
+    return gp_instance ? gp_instance->mu_outstanding_buffers.load(std::memory_order_relaxed) : 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void p8_test_drain_writers()
+{
+    if(!gp_instance)
+    {
+        return;
+    }
+
+    kit::c_lst<uint8_t *> lo_ready;
+
+    // include the writer-shutdown ready queue so the drain is exhaustive
+    gp_instance->mo_ready_lock.lock();
+    while(gp_instance->mo_ready_queue.size() > 0)
+    {
+        lo_ready.push_last(gp_instance->mo_ready_queue.pull_first());
+    }
+    gp_instance->mo_ready_lock.unlock();
+
+    gp_instance->drain_writers(lo_ready);
+    gp_instance->flush_ready(lo_ready);
 }
 
 #endif // P8_TESTING

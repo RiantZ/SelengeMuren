@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cmake-configure-debug",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--preset", "macos-debug-local-kit"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": []
+        },
+        {
+            "label": "cmake-build-debug-tests",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/_Build_mac_debug",
+                "--target",
+                "P8_RegressionTests"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "dependsOn": ["cmake-configure-debug"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "cmake-build-debug-example-logs-file-sink",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/_Build_mac_debug",
+                "--target",
+                "p8_example_multithread_file_sink"
+            ],
+            "options": { "cwd": "${workspaceFolder}" },
+            "dependsOn": ["cmake-configure-debug"],
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}
