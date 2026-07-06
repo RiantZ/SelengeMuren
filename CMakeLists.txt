@@ -12,6 +12,12 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Tracy profiler integration. OFF by default: when disabled nothing is fetched,
+# compiled or linked, and the p8_profiler.hpp macros expand to no-ops, so there
+# is zero build-time and run-time cost. Enable via a *-tracy CMake preset (see
+# CMakePresets.json) or -DP8_ENABLE_TRACY=ON.
+option(P8_ENABLE_TRACY "Enable Tracy profiler instrumentation" OFF)
+
 include(CheckCXXCompilerFlag)
 include(CheckCCompilerFlag)
 

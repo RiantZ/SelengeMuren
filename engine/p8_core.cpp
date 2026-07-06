@@ -2,6 +2,7 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_profiler.hpp"
 #include "p8_sink_file.hpp"
 #include "p8_sink_null.hpp"
 #include "p8_tls_writer.hpp"
@@ -276,8 +277,9 @@ void cp8_core::release()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 bool cp8_core::init_buffer_pool(const char *ip_max_memory_size, const char *ip_initial_memory_size)
 {
-    size_t lz_max_memory_size     = std::numeric_limits<size_t>::max();
+    // N.B.: If you will modify this values, please update @doc/config_example.json:4-12
     size_t lz_initial_memory_size = 1024 * 1024;
+    size_t lz_max_memory_size     = 16 * lz_initial_memory_size;
 
     if(ip_max_memory_size)
     {
@@ -440,35 +442,35 @@ void cp8_core::worker_main()
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
 
-        // move buffers from list protected by mutex to local one
-        mo_svc_mutex.lock();
-        while(mo_svc_buffers.size())
-        {
-            lo_bufs.push_last(mo_svc_buffers.pull_first());
-        }
-        mo_svc_mutex.unlock();
-        //--------------------------------------------------------
-
-        if(lo_bufs.size() > 0)
-        {
-            mp_sink->write_service(lo_bufs);
-        }
-
-        // recycle the consumed service buffers back to the pool
-        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
-                      kit::e_c_lst_pool_policy::e_keep);
-
 #ifdef P8_TESTING
-        // While capture is active the synchronous test drain is the sole data
-        // consumer; the worker must not touch data buffers or it would race on
-        // the captured-buffer store.
-        const bool lb_skip_data = mb_capture_enabled.load(std::memory_order_relaxed);
+        // While capture is active the synchronous test drain is the sole
+        // consumer of both service and data buffers; the worker must not touch
+        // either or it would race the test on the captured/serialized stores.
+        const bool lb_skip = mb_capture_enabled.load(std::memory_order_relaxed);
 #else
-        constexpr bool lb_skip_data = false;
+        constexpr bool lb_skip = false;
 #endif
 
-        if(!lb_skip_data)
+        if(!lb_skip)
         {
+            // move buffers from list protected by mutex to local one
+            mo_svc_mutex.lock();
+            while(mo_svc_buffers.size())
+            {
+                lo_bufs.push_last(mo_svc_buffers.pull_first());
+            }
+            mo_svc_mutex.unlock();
+            //--------------------------------------------------------
+
+            if(lo_bufs.size() > 0)
+            {
+                mp_sink->write_service(lo_bufs);
+            }
+
+            // recycle the consumed service buffers back to the pool
+            lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
+                          kit::e_c_lst_pool_policy::e_keep);
+
             // move buffers from the ready queue (writer-shutdown path) to local one
             mo_ready_lock.lock();
             while(mo_ready_queue.size() > 0)
@@ -481,8 +483,21 @@ void cp8_core::worker_main()
             // pull accumulated buffers from every live writer into the same batch
             drain_writers(lo_ready);
 
+            // Clear the pressure-wake debounce before draining. Every drain (wake,
+            // submit, or timeout) pulls from all writers and relieves pressure, so
+            // the clear is unconditional. It must happen strictly before the flush_ready
+            // below: clearing after would let a pressure notify raced in during the
+            // drain be suppressed and lost until the next timeout. seq_cst keeps the
+            // store from sinking past the acquire-only mutex locks that follow.
+            mb_wake_pending.store(false, std::memory_order_seq_cst);
+
             // write the batch to the sink and recycle it (single capture point)
             flush_ready(lo_ready);
+        }
+        else
+        {
+            // Clear the pressure-wake debounce before draining.
+            mb_wake_pending.store(false, std::memory_order_seq_cst);
         }
 
         mp_sink->flush();
@@ -498,6 +513,24 @@ void cp8_core::worker_main()
 void cp8_core::notify()
 {
     mo_worker_event.set(mu_event_wake);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::notify_pressure()
+{
+    // Fast path: a wake is already pending. Pure relaxed load, no write, so the
+    // cache line stays Shared across all acquiring cores under sustained load.
+    if(mb_wake_pending.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    // Claim the wake. Only the thread that flips false->true pays for set();
+    // the worker clears the flag after wait(), re-arming the next pressure wake.
+    if(!mb_wake_pending.exchange(true, std::memory_order_acquire))
+    {
+        notify();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -660,20 +693,28 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    uint8_t  lu_AcquiredPercentage = 100;
-    uint8_t *lp_buf                = mp_data_pool->acquire(lu_AcquiredPercentage);
+    mp_data_pool->lock();
+    cp8_buffer_pool::s_stat ls_stat = {};
+    uint8_t                *lp_buf  = mp_data_pool->acquire_no_lock();
+
+    mp_data_pool->stat(ls_stat);
+    mp_data_pool->unlock();
+
     if(!lp_buf)
     {
         return nullptr;
     }
 
-    mu_outstanding_buffers.fetch_add(1, std::memory_order_relaxed);
-
-    // Track pool pressure: when outstanding buffers reach P8_CORE_DRAIN_PERCENT
-    // of the allocated pool, wake the worker so it pulls from all writers.
-    if(lu_AcquiredPercentage >= P8_CORE_DRAIN_PERCENT)
+    // Track pool pressure: when free memory drops below P8_CORE_FREE_MEM_PERCENT
+    // of the budget max, wake the worker so it pulls from all writers. Free
+    // memory here is the exact budget headroom (max - outstanding), so a pool
+    // that has grown only partially is not treated as being under pressure.
+    // Debounced: skip the wake if a previous pressure notify is still unhandled,
+    // so a burst of acquiring threads does not storm the worker with redundant
+    // set() calls (each a pthread lock + a counting-semaphore post).
+    if(ls_stat.mz_max_size > 0 && (ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
     {
-        notify();
+        notify_pressure();
     }
 
     return lp_buf;
@@ -749,6 +790,10 @@ void cp8_core::submit_chain(kit::c_lst<uint8_t *> &io_buffers)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 {
+    // Counts every invocation (including the early-out below) plus its timing.
+    // No-op unless the build was configured with a *-tracy preset.
+    P8_PROF_ZONE();
+
     if(!mb_initialized)
     {
         return;
@@ -760,11 +805,21 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
     {
         lp_writer->pull(io_data);
     }
+
+    // Plot the drained buffer count on function exit. No-op without *-tracy.
+    P8_PROF_PLOT("drain_writers io_data.size", static_cast<int64_t>(io_data.size()));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
 {
+    // Counts every invocation (including the early-out below) plus its timing.
+    // No-op unless the build was configured with a *-tracy preset.
+    P8_PROF_ZONE();
+
+    // Plot the incoming buffer count on function entry. No-op without *-tracy.
+    P8_PROF_PLOT("flush_ready io_ready.size", static_cast<int64_t>(io_ready.size()));
+
     if(0 == io_ready.size())
     {
         return;
@@ -1335,12 +1390,6 @@ std::vector<std::vector<uint8_t>> p8_test_get_service_buffers()
         return {};
     }
     return gp_instance->get_service_buffers();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_outstanding_buffers()
-{
-    return gp_instance ? gp_instance->mu_outstanding_buffers.load(std::memory_order_relaxed) : 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -74,10 +74,16 @@ protected:
         struct s_p8_config lo_config = {};
         lo_config.mp_json_config     = "{}";
         ASSERT_TRUE(p8_initialize(&lo_config));
+
+        // Freeze the background worker so it does not drain the serialized
+        // service buffers out from under the snapshot taken by each test.
+        // Same mechanism the data-buffer suites use for their captured store.
+        p8_test_enable_buffer_capture();
     }
 
     void TearDown() override
     {
+        p8_test_disable_buffer_capture();
         p8_release();
     }
 };

@@ -52,6 +52,7 @@ doc/              Design docs, code style reference
 - **kit** (`dep/kit`) — in-tree toolset library. Prefer kit over std/libc/POSIX when both can do the job. Details in `.claude/rules/p8-prefer-kit.md`.
 - **nlohmann_json** v3.12.0 — JSON config parsing.
 - **GoogleTest** v1.17.0 — test framework.
+- **Tracy** v0.13.1 — optional profiler. **OFF by default** (`P8_ENABLE_TRACY`): not fetched/compiled/linked and zero-cost unless enabled. Enable with a `*-tracy` preset (e.g. `--preset macos-tracy`) or `-DP8_ENABLE_TRACY=ON`. Instrument with the `P8_PROF_*` macros in `engine/p8_profiler.hpp` (link `p8::profiler`).
 
 All fetched automatically via CMake FetchContent.
 

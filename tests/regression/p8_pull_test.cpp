@@ -37,38 +37,6 @@ protected:
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// outstanding-buffer counter: acquire increments, release decrements
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-TEST_F(c_pull_test, outstanding_counter_tracks_acquire_release)
-{
-    init_core("{"
-              "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"64KB\","
-              "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"64KB\""
-              "}");
-
-    EXPECT_EQ(p8_test_get_outstanding_buffers(), 0u);
-
-    std::vector<uint8_t *> lo_bufs;
-    for(size_t lz_i = 0; lz_i < 6; ++lz_i)
-    {
-        uint8_t *lp_buf = p8_test_acquire_buffer();
-        ASSERT_NE(lp_buf, nullptr);
-        lo_bufs.push_back(lp_buf);
-    }
-
-    // 6 of 8 pool buffers outstanding == 75%, crosses P8_CORE_DRAIN_PERCENT
-    EXPECT_EQ(p8_test_get_outstanding_buffers(), 6u);
-
-    for(uint8_t *lp_buf : lo_bufs)
-    {
-        p8_test_release_buffer(lp_buf);
-    }
-
-    EXPECT_EQ(p8_test_get_outstanding_buffers(), 0u);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // drain pulls a record from a single live writer (not the shutdown path)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

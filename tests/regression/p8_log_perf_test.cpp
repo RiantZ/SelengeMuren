@@ -14,7 +14,6 @@
 #include <filesystem>
 #include <functional>
 #include <latch>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -188,50 +187,40 @@ TEST_F(c_log_perf_test, DISABLED_send_hello_d_3_attrs)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// multi-threaded file.bin sink throughput
+// multi-threaded null sink throughput
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Each thread sends the same log statement lu_perf_iters_per_thread times
-// through the real file.bin sink (not the in-memory null sink above), so
-// the numbers below include actual disk I/O via cp8_sink_file. Two
-// measurements, per the requested scenario:
-//   * full_cycle : p8_initialize + all threads emitting + p8_release
-//   * emit_only  : only the multi-threaded emission phase (init/release
-//                  happen in SetUp/TearDown, outside the timed section)
+// Each thread first runs a warmup phase of lu_perf_warmup_per_thread log
+// statements (excluded from all measurements), then sends the same log
+// statement lu_perf_iters_per_thread times through the in-memory null sink
+// under a fixed 32MB memory budget. Two measurements are reported:
+//   * full_cycle : p8_initialize + emit phase + p8_release (warmup excluded)
+//   * per-thread : how long each individual thread spent in its emit loop
 // Thread count is configurable via INSTANTIATE_TEST_SUITE_P below.
 
 namespace
 {
-static constexpr uint32_t lu_perf_iters_per_thread = 1'000'000;
+static constexpr uint32_t lu_perf_iters_per_thread  = 1'000'000;
+static constexpr uint32_t lu_perf_warmup_per_thread = 1'000;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-std::filesystem::path make_perf_scratch_dir(const char *ip_stem)
+// Results collected from a single emit run.
+struct s_emit_stats
 {
-    const auto      lo_root = std::filesystem::temp_directory_path()
-                              / (std::string(ip_stem) + "_" + std::to_string(static_cast<uint64_t>(std::rand())));
-    std::error_code lo_ec;
-    std::filesystem::remove_all(lo_root, lo_ec);
-    std::filesystem::create_directories(lo_root);
-    // printf("****************%s\n", lo_root.c_str());
-    return lo_root;
-}
+    double              md_emit_ns = 0.0; // wall time of the whole emit phase (warmup excluded)
+    std::vector<double> mo_thread_ns;     // per-thread emit-loop durations, one entry per thread
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-std::string make_file_sink_config(const std::filesystem::path &ir_out_dir)
+// Spawns iu_thread_count threads. Each thread runs an untimed warmup of
+// iu_warmup_per_thread messages, then all threads are released together via
+// a latch (which the main thread joins so the timed window starts only once
+// every warmup is done). Each thread times its own emit loop; the main
+// thread times the whole emit phase. Blocks until every thread has finished.
+s_emit_stats emit_from_threads(uint32_t iu_thread_count, uint32_t iu_iters_per_thread, uint32_t iu_warmup_per_thread)
 {
-    nlohmann::json lo_json;
-    lo_json[P8_CFG_KEY_SINK]                              = P8_CFG_VAL_SINK_FILE_BIN;
-    lo_json[P8_CFG_KEY_FILE_BIN][P8_CFG_KEY_FILE_OUT_DIR] = ir_out_dir.string();
-    return lo_json.dump();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Spawns iu_thread_count threads, all released together via a latch, each
-// sending the same log statement iu_iters_per_thread times. Blocks until
-// every thread has finished.
-void emit_from_threads(uint32_t iu_thread_count, uint32_t iu_iters_per_thread)
-{
-    std::latch               lo_start_latch(iu_thread_count);
+    std::latch               lo_start_latch(iu_thread_count + 1); // + main thread
     std::vector<std::thread> lo_threads;
+    std::vector<double>      lo_thread_ns(iu_thread_count, 0.0);
     lo_threads.reserve(iu_thread_count);
 
     for(uint32_t lu_t = 0; lu_t < iu_thread_count; ++lu_t)
@@ -239,7 +228,25 @@ void emit_from_threads(uint32_t iu_thread_count, uint32_t iu_iters_per_thread)
         lo_threads.emplace_back(
             [&, lu_t]()
             {
+                // warmup phase - not counted in any measurement
+                for(uint32_t lu_w = 0; lu_w < iu_warmup_per_thread; ++lu_w)
+                {
+                    p8_log_sent(e_p8_trace0,
+                                nullptr,
+                                0,
+                                static_cast<uint32_t>(__LINE__),
+                                __FILE__,
+                                __FUNCTION__,
+                                0,
+                                nullptr,
+                                "perf warmup %u iter %u",
+                                lu_t,
+                                lu_w);
+                }
+
                 lo_start_latch.arrive_and_wait();
+
+                const auto lo_thread_start = std::chrono::steady_clock::now();
                 for(uint32_t lu_i = 0; lu_i < iu_iters_per_thread; ++lu_i)
                 {
                     p8_log_sent(e_p8_trace0,
@@ -254,13 +261,26 @@ void emit_from_threads(uint32_t iu_thread_count, uint32_t iu_iters_per_thread)
                                 lu_t,
                                 lu_i);
                 }
+                const auto lo_thread_end = std::chrono::steady_clock::now();
+                lo_thread_ns[lu_t]       = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(lo_thread_end - lo_thread_start).count());
             });
     }
+
+    lo_start_latch.arrive_and_wait();
+    const auto lo_emit_start = std::chrono::steady_clock::now();
 
     for(auto &lo_t : lo_threads)
     {
         lo_t.join();
     }
+    const auto lo_emit_end = std::chrono::steady_clock::now();
+
+    s_emit_stats lo_stats;
+    lo_stats.md_emit_ns = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(lo_emit_end - lo_emit_start).count());
+    lo_stats.mo_thread_ns = std::move(lo_thread_ns);
+    return lo_stats;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -277,99 +297,67 @@ void report_throughput(const char *ip_label, uint32_t iu_thread_count, uint64_t 
     std::printf("  calls/sec   : %.0f\n", ld_calls_per_sec);
     std::printf("\n");
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void report_per_thread(const std::vector<double> &ir_thread_ns, uint32_t iu_iters_per_thread)
+{
+    std::printf("  --- per-thread emit times ---\n");
+    for(size_t lz_t = 0; lz_t < ir_thread_ns.size(); ++lz_t)
+    {
+        const double ld_ns_per_call = ir_thread_ns[lz_t] / static_cast<double>(iu_iters_per_thread);
+        std::printf("  thread %2zu   : %.3f ms (%.3f ns/call)\n", lz_t, ir_thread_ns[lz_t] / 1e6, ld_ns_per_call);
+    }
+    std::printf("\n");
+}
 } // namespace
 
-// Thread counts exercised by both scenarios below - add/remove values here
-// to change concurrency levels.
+// Thread counts exercised below - add/remove values here to change
+// concurrency levels.
 static const uint32_t ga_perf_thread_counts[] = { 1, 2, 4, 8 };
 
-class c_log_perf_file_sink_full_cycle_test : public ::testing::TestWithParam<uint32_t>
+class c_log_perf_null_sink_full_cycle_test : public ::testing::TestWithParam<uint32_t>
 {
 protected:
-    std::filesystem::path mo_out_dir;
-
-    void SetUp() override
-    {
-        mo_out_dir = make_perf_scratch_dir("p8_perf_full_cycle");
-    }
-
     void TearDown() override
     {
         p8_release(); // defensive: the test body already releases on the happy path
-        std::error_code lo_ec;
-        std::filesystem::remove_all(mo_out_dir, lo_ec);
     }
 };
 
-TEST_P(c_log_perf_file_sink_full_cycle_test, DISABLED_full_cycle)
+TEST_P(c_log_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 {
-    const uint32_t    lu_threads = GetParam();
-    const std::string ls_config  = make_file_sink_config(mo_out_dir);
+    const uint32_t lu_threads    = GetParam();
 
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = ls_config.c_str();
+    lo_config.mp_json_config     = "{"
+                                   "\"" P8_CFG_KEY_SINK "\": \"" P8_CFG_VAL_SINK_NETWORK_NULL "\","
+                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"32MB\","
+                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"32MB\""
+                                   "}";
 
-    const auto lo_start          = std::chrono::steady_clock::now();
-
+    const auto lo_init_start     = std::chrono::steady_clock::now();
     ASSERT_TRUE(p8_initialize(&lo_config));
-    emit_from_threads(lu_threads, lu_perf_iters_per_thread);
-    p8_release();
+    const auto lo_init_end      = std::chrono::steady_clock::now();
 
-    const auto   lo_end = std::chrono::steady_clock::now();
-    const double ld_ns
-        = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(lo_end - lo_start).count());
+    const s_emit_stats lo_stats = emit_from_threads(lu_threads, lu_perf_iters_per_thread, lu_perf_warmup_per_thread);
+
+    const auto lo_rel_start     = std::chrono::steady_clock::now();
+    p8_release();
+    const auto lo_rel_end   = std::chrono::steady_clock::now();
+
+    const double ld_init_ns = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(lo_init_end - lo_init_start).count());
+    const double ld_rel_ns
+        = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(lo_rel_end - lo_rel_start).count());
+    const double ld_full_ns = ld_init_ns + lo_stats.md_emit_ns + ld_rel_ns;
 
     report_throughput("full_cycle (init + emit + release)",
                       lu_threads,
                       static_cast<uint64_t>(lu_threads) * lu_perf_iters_per_thread,
-                      ld_ns);
+                      ld_full_ns);
+    report_per_thread(lo_stats.mo_thread_ns, lu_perf_iters_per_thread);
 }
 
 INSTANTIATE_TEST_SUITE_P(ThreadCounts,
-                         c_log_perf_file_sink_full_cycle_test,
-                         ::testing::ValuesIn(ga_perf_thread_counts));
-
-class c_log_perf_file_sink_emit_only_test : public ::testing::TestWithParam<uint32_t>
-{
-protected:
-    std::filesystem::path mo_out_dir;
-
-    void SetUp() override
-    {
-        mo_out_dir                   = make_perf_scratch_dir("p8_perf_emit_only");
-
-        const std::string  ls_config = make_file_sink_config(mo_out_dir);
-        struct s_p8_config lo_config = {};
-        lo_config.mp_json_config     = ls_config.c_str();
-
-        ASSERT_TRUE(p8_initialize(&lo_config));
-    }
-
-    void TearDown() override
-    {
-        p8_release();
-        std::error_code lo_ec;
-        std::filesystem::remove_all(mo_out_dir, lo_ec);
-    }
-};
-
-TEST_P(c_log_perf_file_sink_emit_only_test, DISABLED_emit_only)
-{
-    const uint32_t lu_threads = GetParam();
-
-    const auto lo_start       = std::chrono::steady_clock::now();
-    emit_from_threads(lu_threads, lu_perf_iters_per_thread);
-    const auto lo_end = std::chrono::steady_clock::now();
-
-    const double ld_ns
-        = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(lo_end - lo_start).count());
-
-    report_throughput("emit_only (sink already open)",
-                      lu_threads,
-                      static_cast<uint64_t>(lu_threads) * lu_perf_iters_per_thread,
-                      ld_ns);
-}
-
-INSTANTIATE_TEST_SUITE_P(ThreadCounts,
-                         c_log_perf_file_sink_emit_only_test,
+                         c_log_perf_null_sink_full_cycle_test,
                          ::testing::ValuesIn(ga_perf_thread_counts));

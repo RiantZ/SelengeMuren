@@ -22,11 +22,12 @@ add_library(p8 STATIC
             p8_trc.hpp
             p8_trc.cpp
             p8_hash.hpp
+            p8_profiler.hpp
             p8_config.cpp
             )
 
 target_include_directories(p8 PRIVATE "${P8_API}")
 set_property(TARGET p8 PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(p8 PRIVATE kit::kit nlohmann_json::nlohmann_json xxhash::xxhash)
+target_link_libraries(p8 PRIVATE kit::kit nlohmann_json::nlohmann_json xxhash::xxhash p8::profiler)
 
 set_ide_folder(p8)

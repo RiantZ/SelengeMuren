@@ -22,10 +22,12 @@
 #define P8_CORE_ACQUIRE_TIMEOUT_MS 100
 #define P8_CORE_THREAD_TIMEOUT_MS  50
 
-// When outstanding (acquired-but-not-recycled) data buffers reach this percentage
-// of the total allocated pool, acquire_buffer wakes the worker so it can pull
-// accumulated buffers from all writers.
-#define P8_CORE_DRAIN_PERCENT      75
+// When free data-buffer memory drops below this percentage of the total
+// *allocated* pool (buffers that actually exist, i.e. free + outstanding — not
+// the budget cap), acquire_buffer wakes the worker so it can pull accumulated
+// buffers from all writers. Measuring against allocated memory keeps an
+// infinite/default budget from reading as permanent pressure.
+#define P8_CORE_FREE_MEM_PERCENT   25
 
 class cp8_tls_writer;
 struct s_p8_log_desc;
@@ -118,6 +120,10 @@ private:
     void stop_worker();
     void worker_main();
 
+    // Debounced wake for the memory-pressure path: only calls notify() if the
+    // previous pressure wake has already been consumed by the worker.
+    void notify_pressure();
+
     // Pull accumulated buffers from every registered writer into io_data, in
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
@@ -186,6 +192,14 @@ private:
     c_event     mo_worker_event;
     bool        mb_worker_running = false;
 
+    // Debounces the memory-pressure wake in acquire_buffer: once a pressure
+    // wake is in flight, further pressure notifications are suppressed until
+    // the worker consumes it. Set (false->true) by whichever acquiring thread
+    // wins the claim, cleared by the worker after every wait(). Read on the hot
+    // path (relaxed load), written only ~once per wake cycle, so cross-core
+    // write traffic stays minimal. Own cache line to avoid false sharing.
+    alignas(64) std::atomic<bool> mb_wake_pending { false };
+
     // ready-queue: filled data buffers submitted by producers, drained and
     // recycled by the worker thread. Protected by a mutex on the hot path.
     kit::c_lst<uint8_t *> mo_ready_queue { 4096 };
@@ -201,7 +215,6 @@ private:
     friend void                                     p8_test_clear_captured_buffers();
     friend size_t                                   p8_test_get_writer_count();
     friend cp8_tls_writer                          *p8_test_get_writers_head();
-    friend size_t                                   p8_test_get_outstanding_buffers();
     friend void                                     p8_test_drain_writers();
 
     // When capture is enabled the worker leaves data buffers untouched so the
@@ -228,6 +241,5 @@ void                                     p8_test_clear_captured_buffers();
 size_t                                   p8_test_get_writer_count();
 cp8_tls_writer                          *p8_test_get_writers_head();
 std::vector<std::vector<uint8_t>>        p8_test_get_service_buffers();
-size_t                                   p8_test_get_outstanding_buffers();
 void                                     p8_test_drain_writers();
 #endif

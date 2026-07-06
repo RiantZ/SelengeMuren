@@ -60,8 +60,9 @@ TEST_F(c_p8_buffer_pool_test, acquire_returns_preallocated_buffer)
 
     lo_pool.init(2);
 
-    uint8_t  lu_uAcquiredPercentage = 0;
-    uint8_t *lp_buf                 = lo_pool.acquire(lu_uAcquiredPercentage);
+    lo_pool.lock();
+    uint8_t *lp_buf = lo_pool.acquire_no_lock();
+    lo_pool.unlock();
     ASSERT_NE(lp_buf, nullptr);
     EXPECT_EQ(lo_pool.get_free_count(), 1u);
 
@@ -76,9 +77,10 @@ TEST_F(c_p8_buffer_pool_test, acquire_grows_on_demand)
 
     lo_pool.init(1);
 
-    uint8_t  lu_uAcquiredPercentage = 0;
-    uint8_t *lp_buf1                = lo_pool.acquire(lu_uAcquiredPercentage);
-    uint8_t *lp_buf2                = lo_pool.acquire(lu_uAcquiredPercentage);
+    lo_pool.lock();
+    uint8_t *lp_buf1 = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2 = lo_pool.acquire_no_lock();
+    lo_pool.unlock();
     ASSERT_NE(lp_buf1, nullptr);
     ASSERT_NE(lp_buf2, nullptr);
     EXPECT_EQ(lo_pool.get_free_count(), 0u);
@@ -93,22 +95,108 @@ TEST_F(c_p8_buffer_pool_test, acquire_returns_null_when_budget_exhausted)
     auto            lp_budget = std::make_shared<cp8_memory_budget>(2 * 1024);
     cp8_buffer_pool lo_pool(1024, lp_budget);
 
-    uint8_t  lu_uAcquiredPercentage = 0;
-    uint8_t *lp_buf1                = lo_pool.acquire(lu_uAcquiredPercentage);
-    uint8_t *lp_buf2                = lo_pool.acquire(lu_uAcquiredPercentage);
+    lo_pool.lock();
+    uint8_t *lp_buf1 = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2 = lo_pool.acquire_no_lock();
+    lo_pool.unlock();
     ASSERT_NE(lp_buf1, nullptr);
     ASSERT_NE(lp_buf2, nullptr);
 
-    uint8_t *lp_buf3 = lo_pool.acquire(lu_uAcquiredPercentage);
+    lo_pool.lock();
+    uint8_t *lp_buf3 = lo_pool.acquire_no_lock();
+    lo_pool.unlock();
     EXPECT_EQ(lp_buf3, nullptr);
 
     lo_pool.recycle(lp_buf1);
 
-    uint8_t *lp_buf4 = lo_pool.acquire(lu_uAcquiredPercentage);
+    lo_pool.lock();
+    uint8_t *lp_buf4 = lo_pool.acquire_no_lock();
+    lo_pool.unlock();
     EXPECT_NE(lp_buf4, nullptr);
 
     lo_pool.recycle(lp_buf2);
     lo_pool.recycle(lp_buf4);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_reports_budget_max_and_free_headroom)
+{
+    // stat() reports the budget cap as mz_max_size and the exact free headroom
+    // (max - outstanding) as mz_free_size. Nothing is outstanding yet, so the
+    // whole budget reads as free even though only part of it is pre-allocated.
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(4);
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.lock();
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    EXPECT_EQ(lo_stat.mz_buffer_size, 1024u);
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    // nothing outstanding => the full budget is free, not just the 4 allocated
+    // buffers.
+    EXPECT_EQ(lo_stat.mz_free_size, 8u * 1024u);
+
+    // 100% free => not under pressure.
+    EXPECT_EQ(lo_stat.mz_free_size * 100ull / lo_stat.mz_max_size, 100u);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_tracks_outstanding_after_acquire)
+{
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(4);
+
+    lo_pool.lock();
+    uint8_t *lp_buf1                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf3                = lo_pool.acquire_no_lock();
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    ASSERT_NE(lp_buf1, nullptr);
+    ASSERT_NE(lp_buf2, nullptr);
+    ASSERT_NE(lp_buf3, nullptr);
+
+    // 3 buffers outstanding: free = max - outstanding, max stays at the budget.
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    EXPECT_EQ(lo_stat.mz_free_size, (8u - 3u) * 1024u);
+
+    lo_pool.recycle(lp_buf1);
+    lo_pool.recycle(lp_buf2);
+    lo_pool.recycle(lp_buf3);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_free_shrinks_with_on_demand_growth)
+{
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(1);
+
+    lo_pool.lock();
+    uint8_t *lp_buf1                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2                = lo_pool.acquire_no_lock();
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    ASSERT_NE(lp_buf1, nullptr);
+    ASSERT_NE(lp_buf2, nullptr);
+
+    // pool grew on demand from 1 to 2 buffers, both outstanding: free drops by
+    // 2 buffers off the budget cap.
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    EXPECT_EQ(lo_stat.mz_free_size, (8u - 2u) * 1024u);
+
+    lo_pool.recycle(lp_buf1);
+    lo_pool.recycle(lp_buf2);
 }
 
 TEST_F(c_p8_buffer_pool_test, recycle_null_is_safe)
@@ -127,21 +215,28 @@ TEST_F(c_p8_buffer_pool_test, two_pools_share_budget)
     cp8_buffer_pool lo_data_pool(2 * 1024, lp_budget);
     cp8_buffer_pool lo_mini_pool(1024, lp_budget);
 
-    uint8_t  lu_uAcquiredPercentage = 0;
-    uint8_t *lp_data                = lo_data_pool.acquire(lu_uAcquiredPercentage);
+    lo_data_pool.lock();
+    uint8_t *lp_data = lo_data_pool.acquire_no_lock();
+    lo_data_pool.unlock();
     ASSERT_NE(lp_data, nullptr);
     EXPECT_EQ(lp_budget->get_used(), 2u * 1024u);
 
-    uint8_t *lp_mini1 = lo_mini_pool.acquire(lu_uAcquiredPercentage);
-    uint8_t *lp_mini2 = lo_mini_pool.acquire(lu_uAcquiredPercentage);
+    lo_mini_pool.lock();
+    uint8_t *lp_mini1 = lo_mini_pool.acquire_no_lock();
+    uint8_t *lp_mini2 = lo_mini_pool.acquire_no_lock();
+    lo_mini_pool.unlock();
     ASSERT_NE(lp_mini1, nullptr);
     ASSERT_NE(lp_mini2, nullptr);
     EXPECT_EQ(lp_budget->get_used(), 4u * 1024u);
 
-    uint8_t *lp_mini3 = lo_mini_pool.acquire(lu_uAcquiredPercentage);
+    lo_mini_pool.lock();
+    uint8_t *lp_mini3 = lo_mini_pool.acquire_no_lock();
+    lo_mini_pool.unlock();
     EXPECT_EQ(lp_mini3, nullptr);
 
-    uint8_t *lp_data_extra = lo_data_pool.acquire(lu_uAcquiredPercentage);
+    lo_data_pool.lock();
+    uint8_t *lp_data_extra = lo_data_pool.acquire_no_lock();
+    lo_data_pool.unlock();
     EXPECT_EQ(lp_data_extra, nullptr);
 
     lo_data_pool.recycle(lp_data);
@@ -202,9 +297,15 @@ TEST_F(c_p8_buffer_pool_test, pool_dropping_shared_ptr_keeps_budget_alive)
         lp_budget.reset();
         EXPECT_FALSE(lp_weak.expired()) << "pools failed to keep the budget alive";
 
-        uint8_t lu_uAcquiredPercentage = 0;
-        ASSERT_NE(lo_pool_a.acquire(lu_uAcquiredPercentage), nullptr);
-        ASSERT_NE(lo_pool_b.acquire(lu_uAcquiredPercentage), nullptr);
+        lo_pool_a.lock();
+        uint8_t *lp_buf_a = lo_pool_a.acquire_no_lock();
+        lo_pool_a.unlock();
+        ASSERT_NE(lp_buf_a, nullptr);
+
+        lo_pool_b.lock();
+        uint8_t *lp_buf_b = lo_pool_b.acquire_no_lock();
+        lo_pool_b.unlock();
+        ASSERT_NE(lp_buf_b, nullptr);
     }
     EXPECT_TRUE(lp_weak.expired()) << "budget leaked past all pool lifetimes";
 }
@@ -218,8 +319,9 @@ TEST_F(c_p8_buffer_pool_test, pool_without_budget_grows_unbounded)
 
     for(size_t lz_i = 0; lz_i < 8; ++lz_i)
     {
-        uint8_t  lu_uAcquiredPercentage = 0;
-        uint8_t *lp_buf                 = lo_pool.acquire(lu_uAcquiredPercentage);
+        lo_pool.lock();
+        uint8_t *lp_buf = lo_pool.acquire_no_lock();
+        lo_pool.unlock();
         ASSERT_NE(lp_buf, nullptr);
         lo_bufs.push_back(lp_buf);
     }
@@ -250,8 +352,9 @@ TEST_F(c_p8_buffer_pool_test, concurrent_acquire_release)
                 lo_start_latch.arrive_and_wait();
                 for(size_t lz_j = 0; lz_j < lz_iterations; ++lz_j)
                 {
-                    uint8_t  lu_uAcquiredPercentage = 0;
-                    uint8_t *lp_buf                 = lo_pool.acquire(lu_uAcquiredPercentage);
+                    lo_pool.lock();
+                    uint8_t *lp_buf = lo_pool.acquire_no_lock();
+                    lo_pool.unlock();
                     if(lp_buf)
                     {
                         lo_pool.recycle(lp_buf);
@@ -297,11 +400,13 @@ TEST_F(c_p8_buffer_pool_test, concurrent_two_pools_share_budget_never_exceeds_li
                 lo_start_latch.arrive_and_wait();
                 for(size_t lz_j = 0; lz_j < lz_iterations; ++lz_j)
                 {
-                    uint8_t          lu_uAcquiredPercentage = 0;
-                    cp8_buffer_pool *lp_pool                = ((lz_i + lz_j) & 1) ? &lo_data_pool : &lo_mini_pool;
-                    uint8_t         *lp_buf                 = lp_pool->acquire(lu_uAcquiredPercentage);
+                    cp8_buffer_pool *lp_pool = ((lz_i + lz_j) & 1) ? &lo_data_pool : &lo_mini_pool;
 
-                    size_t lz_used                          = lp_budget->get_used();
+                    lp_pool->lock();
+                    uint8_t *lp_buf = lp_pool->acquire_no_lock();
+                    lp_pool->unlock();
+
+                    size_t lz_used = lp_budget->get_used();
                     if(lz_used > lz_capacity)
                     {
                         lb_invariant_broken.store(true, std::memory_order_relaxed);
@@ -350,8 +455,9 @@ TEST_F(c_p8_buffer_pool_test, concurrent_acquire_unique_pointers)
                 lo_start_latch.arrive_and_wait();
                 for(size_t lz_j = 0; lz_j < lz_per_thread; ++lz_j)
                 {
-                    uint8_t  lu_uAcquiredPercentage = 0;
-                    uint8_t *lp_buf                 = lo_pool.acquire(lu_uAcquiredPercentage);
+                    lo_pool.lock();
+                    uint8_t *lp_buf = lo_pool.acquire_no_lock();
+                    lo_pool.unlock();
                     ASSERT_NE(lp_buf, nullptr);
                     lo_collected[lz_i].push_back(lp_buf);
                 }

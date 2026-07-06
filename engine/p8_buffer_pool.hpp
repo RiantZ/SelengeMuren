@@ -19,6 +19,21 @@ class cp8_memory_budget;
 class cp8_buffer_pool
 {
 public:
+    struct s_stat
+    {
+        size_t mz_buffer_size;
+        // Exact free space: budget headroom that has not been handed out yet,
+        // i.e. max - outstanding. This counts memory that is not yet allocated
+        // as free, so a pool that has grown only partially is not reported as
+        // being under pressure.
+        size_t mz_free_size;
+        // The budget cap this pool draws from (mp_budget->get_max()), i.e. the
+        // maximum memory the pool may ever occupy — not the currently allocated
+        // amount.
+        size_t mz_max_size;
+    };
+
+public:
     cp8_buffer_pool(size_t iz_buffer_size, std::shared_ptr<cp8_memory_budget> ip_budget);
     ~cp8_buffer_pool();
 
@@ -32,9 +47,10 @@ public:
     // grow-on-demand will still kick in on the first acquire.
     size_t init(size_t iz_initial_count);
 
-    // Acquires a free buffer from the pool. Returns nullptr when the budget
-    // is exhausted or the underlying allocator fails.
-    uint8_t *acquire(uint8_t &or_uAcquiredPercentage);
+    void     lock();
+    uint8_t *acquire_no_lock();
+    void     stat(cp8_buffer_pool::s_stat &or_stat);
+    void     unlock();
 
     // Returns a previously-acquired buffer to the free list.
     // Released memory is kept in the pool — it is not given back to the OS.
