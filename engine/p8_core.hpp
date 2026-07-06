@@ -25,7 +25,7 @@
 // When outstanding (acquired-but-not-recycled) data buffers reach this percentage
 // of the total allocated pool, acquire_buffer wakes the worker so it can pull
 // accumulated buffers from all writers.
-#define P8_CORE_DRAIN_PERCENT      75
+#define P8_CORE_FREE_MEM_PERCENT   25
 
 class cp8_tls_writer;
 struct s_p8_log_desc;

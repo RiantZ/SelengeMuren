@@ -661,16 +661,21 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    uint8_t  lu_AcquiredPercentage = 100;
-    uint8_t *lp_buf                = mp_data_pool->acquire(lu_AcquiredPercentage);
+    mp_data_pool->lock();
+    cp8_buffer_pool::s_stat ls_stat = {};
+    uint8_t                *lp_buf  = mp_data_pool->acquire_no_lock();
+
+    mp_data_pool->stat(ls_stat);
+    mp_data_pool->unlock();
+
     if(!lp_buf)
     {
         return nullptr;
     }
 
-    // Track pool pressure: when outstanding buffers reach P8_CORE_DRAIN_PERCENT
+    // Track pool pressure: when outstanding buffers reach P8_CORE_FREE_MEM_PERCENT
     // of the allocated pool, wake the worker so it pulls from all writers.
-    if(lu_AcquiredPercentage >= P8_CORE_DRAIN_PERCENT)
+    if((ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
     {
         notify();
     }

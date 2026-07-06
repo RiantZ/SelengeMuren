@@ -23,7 +23,6 @@ public:
     // Releases a previously-reserved amount back to the budget.
     void release(size_t iz_bytes);
 
-#ifdef P8_TESTING
     size_t get_used() const
     {
         return mu_used.load(std::memory_order_relaxed);
@@ -32,7 +31,7 @@ public:
     {
         return mz_max;
     }
-#endif
+
 private:
     std::atomic<size_t> mu_used { 0 };
     size_t              mz_max;

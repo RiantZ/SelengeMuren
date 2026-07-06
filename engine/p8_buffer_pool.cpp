@@ -67,10 +67,13 @@ size_t cp8_buffer_pool::init(size_t iz_initial_count)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-uint8_t *cp8_buffer_pool::acquire(uint8_t &or_uAcquiredPercentage)
+void cp8_buffer_pool::lock()
 {
-    std::lock_guard<std::mutex> lo_guard(mo_mutex);
-
+    mo_mutex.lock();
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint8_t *cp8_buffer_pool::acquire_no_lock()
+{
     if(mo_free.size() == 0)
     {
         if(mp_budget && !mp_budget->try_reserve(mz_buffer_size))
@@ -93,15 +96,21 @@ uint8_t *cp8_buffer_pool::acquire(uint8_t &or_uAcquiredPercentage)
         mo_free.push_last(lp_buf);
     }
 
-    mz_acquired            += mz_buffer_size;
-
-    // Report how full the pool is (acquired vs. total allocated) so the caller
-    // can drive drain / back-pressure. Measured against the pool's own
-    // allocation, not the shared budget, so budget-less pools work too.
-    size_t lz_total         = mo_all.size() * mz_buffer_size;
-    or_uAcquiredPercentage  = (lz_total > 0) ? (uint8_t)(mz_acquired * 100u / lz_total) : 0;
-
     return mo_free.pull_first();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_buffer_pool::stat(cp8_buffer_pool::s_stat &or_stat)
+{
+    or_stat.mz_buffer_size = mz_buffer_size;
+    or_stat.mz_max_size    = mp_budget->get_max();
+    or_stat.mz_free_size   = mo_free.size() * mz_buffer_size;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_buffer_pool::unlock()
+{
+    mo_mutex.unlock();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
