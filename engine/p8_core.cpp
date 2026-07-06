@@ -2,6 +2,7 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_profiler.hpp"
 #include "p8_sink_file.hpp"
 #include "p8_sink_null.hpp"
 #include "p8_tls_writer.hpp"
@@ -667,8 +668,6 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    mu_outstanding_buffers.fetch_add(1, std::memory_order_relaxed);
-
     // Track pool pressure: when outstanding buffers reach P8_CORE_DRAIN_PERCENT
     // of the allocated pool, wake the worker so it pulls from all writers.
     if(lu_AcquiredPercentage >= P8_CORE_DRAIN_PERCENT)
@@ -688,7 +687,6 @@ void cp8_core::release_buffer(uint8_t *ip_buffer)
     }
 
     mp_data_pool->recycle(ip_buffer);
-    mu_outstanding_buffers.fetch_sub(1, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -749,6 +747,10 @@ void cp8_core::submit_chain(kit::c_lst<uint8_t *> &io_buffers)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 {
+    // Counts every invocation (including the early-out below) plus its timing.
+    // No-op unless the build was configured with a *-tracy preset.
+    P8_PROF_ZONE();
+
     if(!mb_initialized)
     {
         return;
@@ -760,11 +762,21 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
     {
         lp_writer->pull(io_data);
     }
+
+    // Plot the drained buffer count on function exit. No-op without *-tracy.
+    P8_PROF_PLOT("drain_writers io_data.size", static_cast<int64_t>(io_data.size()));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
 {
+    // Counts every invocation (including the early-out below) plus its timing.
+    // No-op unless the build was configured with a *-tracy preset.
+    P8_PROF_ZONE();
+
+    // Plot the incoming buffer count on function entry. No-op without *-tracy.
+    P8_PROF_PLOT("flush_ready io_ready.size", static_cast<int64_t>(io_ready.size()));
+
     if(0 == io_ready.size())
     {
         return;
@@ -1335,12 +1347,6 @@ std::vector<std::vector<uint8_t>> p8_test_get_service_buffers()
         return {};
     }
     return gp_instance->get_service_buffers();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t p8_test_get_outstanding_buffers()
-{
-    return gp_instance ? gp_instance->mu_outstanding_buffers.load(std::memory_order_relaxed) : 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

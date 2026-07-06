@@ -10,6 +10,7 @@
 // descriptors) and <name>.p8dat (the hello header plus all log data).
 
 #include "p8_client_api.h"
+#include "p8_profiler.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -18,26 +19,20 @@
 #include <thread>
 #include <vector>
 
+#if defined(P8_ENABLE_TRACY)
+    #if defined(_WIN32)
+        #include <conio.h>
+    #else
+        #include <termios.h>
+        #include <unistd.h>
+    #endif
+void wait_for_any_key();
+#endif
+
 namespace
 {
-static constexpr uint32_t lu_thread_count    = 8;
-static constexpr uint32_t lu_logs_per_thread = 1000;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Build a JSON config selecting the file.bin sink and pointing it at
-// ip_out_dir. Keys mirror doc/config_example.json and the "FileBin" section
-// consumed by cp8_sink_file.
-std::string make_config(const char *ip_out_dir)
-{
-    std::string lo_json;
-    lo_json += "{";
-    lo_json += "\"sink\": \"file.bin\",";
-    lo_json += "\"FileBin\": { \"OutDir\": \"";
-    lo_json += ip_out_dir;
-    lo_json += "\" }";
-    lo_json += "}";
-    return lo_json;
-}
+static constexpr uint32_t lu_thread_count    = 4;
+static constexpr uint32_t lu_logs_per_thread = 1'000'000;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Worker body: name the thread (for nice formatting) and emit iu_logs records.
@@ -49,6 +44,10 @@ void run_worker(uint32_t iu_thread_index, uint32_t iu_logs)
     char la_name[32];
     std::snprintf(la_name, sizeof(la_name), "worker_%u", iu_thread_index);
     cp8_thread lo_thread_guard(la_name);
+
+    // No-ops unless the build was configured with a *-tracy preset.
+    P8_PROF_THREAD_NAME(la_name);
+    P8_PROF_ZONE_NAMED("worker_log_loop");
 
     for(uint32_t lu_i = 0; lu_i < iu_logs; ++lu_i)
     {
@@ -73,7 +72,18 @@ int main(int argc, char **argv)
 {
     const char *lp_out_dir       = (argc > 1) ? argv[1] : "./p8_logs";
 
-    const std::string  ls_config = make_config(lp_out_dir);
+    const std::string ls_config  = std::string(R"(
+    {
+        "max_memory_size": "8MB",
+        "initial_memory_size": "8MB",
+        "sink": "file.bin",
+        "FileBin": 
+        { 
+             "OutDir": ")") + lp_out_dir
+                                   + R"(" 
+        }
+    })";
+
     struct s_p8_config lo_config = {};
     lo_config.mp_json_config     = ls_config.c_str();
 
@@ -85,21 +95,68 @@ int main(int argc, char **argv)
 
     std::printf("emitting %u logs from %u threads into \"%s\" ...\n", lu_logs_per_thread, lu_thread_count, lp_out_dir);
 
-    std::vector<std::thread> lo_threads;
-    lo_threads.reserve(lu_thread_count);
-    for(uint32_t lu_t = 0; lu_t < lu_thread_count; ++lu_t)
     {
-        lo_threads.emplace_back(run_worker, lu_t, lu_logs_per_thread);
-    }
+        // No-op unless the build was configured with a *-tracy preset.
+        P8_PROF_ZONE_NAMED("emit_all_threads");
 
-    for(auto &lo_t : lo_threads)
-    {
-        lo_t.join();
+        std::vector<std::thread> lo_threads;
+        lo_threads.reserve(lu_thread_count);
+        for(uint32_t lu_t = 0; lu_t < lu_thread_count; ++lu_t)
+        {
+            lo_threads.emplace_back(run_worker, lu_t, lu_logs_per_thread);
+        }
+
+        for(auto &lo_t : lo_threads)
+        {
+            lo_t.join();
+        }
     }
 
     // p8_release() drains buffered records to the sink and tears the core down.
+    P8_PROF_ZONE_NAMED("p8_release");
     p8_release();
 
     std::printf("done: %u threads x %u logs delivered to the file.bin sink\n", lu_thread_count, lu_logs_per_thread);
+
+#if defined(P8_ENABLE_TRACY)
+    // Keep the process (and the Tracy frame) alive until the user presses any
+    // key, so a Tracy profiler client has time to connect and capture the run.
+    std::printf("press any key to exit ...\n");
+    std::fflush(stdout);
+    wait_for_any_key();
+
+#endif
+
     return EXIT_SUCCESS;
 }
+
+#if defined(P8_ENABLE_TRACY)
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Block until the user presses any key. Windows uses _getch(); POSIX puts the
+// terminal into raw, no-echo mode for a single read() so no Enter is required.
+void wait_for_any_key()
+{
+    #if defined(_WIN32)
+    (void)_getch();
+    #else
+    struct termios lo_old = {};
+    if(tcgetattr(STDIN_FILENO, &lo_old) != 0)
+    {
+        // Not a tty (e.g. piped input): fall back to a blocking line read.
+        (void)std::getchar();
+        return;
+    }
+
+    struct termios lo_raw  = lo_old;
+    lo_raw.c_lflag        &= static_cast<tcflag_t>(~(ICANON | ECHO));
+    lo_raw.c_cc[VMIN]      = 1;
+    lo_raw.c_cc[VTIME]     = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &lo_raw);
+
+    char lc_ch = 0;
+    (void)read(STDIN_FILENO, &lc_ch, 1);
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &lo_old);
+    #endif
+}
+#endif
