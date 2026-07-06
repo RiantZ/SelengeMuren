@@ -118,6 +118,10 @@ private:
     void stop_worker();
     void worker_main();
 
+    // Debounced wake for the memory-pressure path: only calls notify() if the
+    // previous pressure wake has already been consumed by the worker.
+    void notify_pressure();
+
     // Pull accumulated buffers from every registered writer into io_data, in
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
@@ -181,6 +185,14 @@ private:
     std::thread mo_worker_thread;
     c_event     mo_worker_event;
     bool        mb_worker_running = false;
+
+    // Debounces the memory-pressure wake in acquire_buffer: once a pressure
+    // wake is in flight, further pressure notifications are suppressed until
+    // the worker consumes it. Set (false->true) by whichever acquiring thread
+    // wins the claim, cleared by the worker after every wait(). Read on the hot
+    // path (relaxed load), written only ~once per wake cycle, so cross-core
+    // write traffic stays minimal. Own cache line to avoid false sharing.
+    alignas(64) std::atomic<bool> mb_wake_pending { false };
 
     // ready-queue: filled data buffers submitted by producers, drained and
     // recycled by the worker thread. Protected by a mutex on the hot path.

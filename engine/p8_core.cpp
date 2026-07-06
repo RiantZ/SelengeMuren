@@ -441,35 +441,35 @@ void cp8_core::worker_main()
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
 
-        // move buffers from list protected by mutex to local one
-        mo_svc_mutex.lock();
-        while(mo_svc_buffers.size())
-        {
-            lo_bufs.push_last(mo_svc_buffers.pull_first());
-        }
-        mo_svc_mutex.unlock();
-        //--------------------------------------------------------
-
-        if(lo_bufs.size() > 0)
-        {
-            mp_sink->write_service(lo_bufs);
-        }
-
-        // recycle the consumed service buffers back to the pool
-        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
-                      kit::e_c_lst_pool_policy::e_keep);
-
 #ifdef P8_TESTING
-        // While capture is active the synchronous test drain is the sole data
-        // consumer; the worker must not touch data buffers or it would race on
-        // the captured-buffer store.
-        const bool lb_skip_data = mb_capture_enabled.load(std::memory_order_relaxed);
+        // While capture is active the synchronous test drain is the sole
+        // consumer of both service and data buffers; the worker must not touch
+        // either or it would race the test on the captured/serialized stores.
+        const bool lb_skip = mb_capture_enabled.load(std::memory_order_relaxed);
 #else
-        constexpr bool lb_skip_data = false;
+        constexpr bool lb_skip = false;
 #endif
 
-        if(!lb_skip_data)
+        if(!lb_skip)
         {
+            // move buffers from list protected by mutex to local one
+            mo_svc_mutex.lock();
+            while(mo_svc_buffers.size())
+            {
+                lo_bufs.push_last(mo_svc_buffers.pull_first());
+            }
+            mo_svc_mutex.unlock();
+            //--------------------------------------------------------
+
+            if(lo_bufs.size() > 0)
+            {
+                mp_sink->write_service(lo_bufs);
+            }
+
+            // recycle the consumed service buffers back to the pool
+            lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
+                          kit::e_c_lst_pool_policy::e_keep);
+
             // move buffers from the ready queue (writer-shutdown path) to local one
             mo_ready_lock.lock();
             while(mo_ready_queue.size() > 0)
@@ -482,8 +482,21 @@ void cp8_core::worker_main()
             // pull accumulated buffers from every live writer into the same batch
             drain_writers(lo_ready);
 
+            // Clear the pressure-wake debounce before draining. Every drain (wake,
+            // submit, or timeout) pulls from all writers and relieves pressure, so
+            // the clear is unconditional. It must happen strictly before the flush_ready
+            // below: clearing after would let a pressure notify raced in during the
+            // drain be suppressed and lost until the next timeout. seq_cst keeps the
+            // store from sinking past the acquire-only mutex locks that follow.
+            mb_wake_pending.store(false, std::memory_order_seq_cst);
+
             // write the batch to the sink and recycle it (single capture point)
             flush_ready(lo_ready);
+        }
+        else
+        {
+            // Clear the pressure-wake debounce before draining.
+            mb_wake_pending.store(false, std::memory_order_seq_cst);
         }
 
         mp_sink->flush();
@@ -499,6 +512,24 @@ void cp8_core::worker_main()
 void cp8_core::notify()
 {
     mo_worker_event.set(mu_event_wake);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::notify_pressure()
+{
+    // Fast path: a wake is already pending. Pure relaxed load, no write, so the
+    // cache line stays Shared across all acquiring cores under sustained load.
+    if(mb_wake_pending.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    // Claim the wake. Only the thread that flips false->true pays for set();
+    // the worker clears the flag after wait(), re-arming the next pressure wake.
+    if(!mb_wake_pending.exchange(true, std::memory_order_acquire))
+    {
+        notify();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -675,9 +706,12 @@ uint8_t *cp8_core::acquire_buffer()
 
     // Track pool pressure: when outstanding buffers reach P8_CORE_FREE_MEM_PERCENT
     // of the allocated pool, wake the worker so it pulls from all writers.
+    // Debounced: skip the wake if a previous pressure notify is still unhandled,
+    // so a burst of acquiring threads does not storm the worker with redundant
+    // set() calls (each a pthread lock + counting-semaphore post).
     if((ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
     {
-        notify();
+        notify_pressure();
     }
 
     return lp_buf;
