@@ -65,16 +65,27 @@ The build must use `Release` configuration (`CMAKE_BUILD_TYPE=Release`, the defa
 
 ```bash
 cd _Build_mac && ./tests/regression/P8_RegressionTests \
-    --gtest_filter="c_log_perf_test.*" \
+    --gtest_filter="*c_log_perf*" \
     --gtest_also_run_disabled_tests
 ```
 
-Reference numbers (Apple M4 Max, macOS, Release):
+Reference numbers (Apple M4 Max, macOS, Release).
+
+Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations, median ns/call):
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `send_hello_d_no_attrs` | 22 ns | 1 000 000 |
-| `send_hello_d_3_attrs` (str + i64 + f64) | 38 ns | 1 000 000 |
+| `send_hello_d_no_attrs` | 26.8 ns | 1 000 000 |
+| `send_hello_d_3_attrs` (str + i64 + f64) | 39.3 ns | 1 000 000 |
+
+`full_cycle` throughput (init + emit + release) through the in-memory null sink, 1 000 000 iterations per thread:
+
+| Threads | Total calls | ns/call | Throughput |
+|---------|-------------|---------|------------|
+| 1 | 1 000 000 | 22.6 ns | 44.2 M calls/s |
+| 2 | 2 000 000 | 12.7 ns | 78.6 M calls/s |
+| 4 | 4 000 000 | 9.8 ns  | 102.4 M calls/s |
+| 8 | 8 000 000 | 6.4 ns  | 157.0 M calls/s |
 
 ### Profiling with Tracy
 
