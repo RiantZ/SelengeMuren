@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <latch>
-#include <limits>
 #include <memory>
 #include <thread>
 #include <unordered_set>
@@ -119,12 +118,12 @@ TEST_F(c_p8_buffer_pool_test, acquire_returns_null_when_budget_exhausted)
     lo_pool.recycle(lp_buf4);
 }
 
-TEST_F(c_p8_buffer_pool_test, stat_reports_allocated_pool_not_budget_max)
+TEST_F(c_p8_buffer_pool_test, stat_reports_budget_max_and_free_headroom)
 {
-    // Regression for the degenerate pressure heuristic: stat() must report the
-    // *allocated* pool size (free + outstanding), never the budget cap. An
-    // infinite/default budget must therefore never read as permanent pressure.
-    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    // stat() reports the budget cap as mz_max_size and the exact free headroom
+    // (max - outstanding) as mz_free_size. Nothing is outstanding yet, so the
+    // whole budget reads as free even though only part of it is pre-allocated.
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
     cp8_buffer_pool lo_pool(1024, lp_budget);
 
     lo_pool.init(4);
@@ -135,19 +134,18 @@ TEST_F(c_p8_buffer_pool_test, stat_reports_allocated_pool_not_budget_max)
     lo_pool.unlock();
 
     EXPECT_EQ(lo_stat.mz_buffer_size, 1024u);
-    EXPECT_EQ(lo_stat.mz_free_size, 4u * 1024u);
-    // allocated = free + outstanding; with an infinite budget it must equal the
-    // real pool, not SIZE_MAX.
-    EXPECT_EQ(lo_stat.mz_allocated_size, 4u * 1024u);
-    EXPECT_NE(lo_stat.mz_allocated_size, std::numeric_limits<size_t>::max());
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    // nothing outstanding => the full budget is free, not just the 4 allocated
+    // buffers.
+    EXPECT_EQ(lo_stat.mz_free_size, 8u * 1024u);
 
-    // 100% free => not under pressure even though the budget is infinite.
-    EXPECT_GE(lo_stat.mz_free_size * 100ull / lo_stat.mz_allocated_size, 25u);
+    // 100% free => not under pressure.
+    EXPECT_EQ(lo_stat.mz_free_size * 100ull / lo_stat.mz_max_size, 100u);
 }
 
 TEST_F(c_p8_buffer_pool_test, stat_tracks_outstanding_after_acquire)
 {
-    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
     cp8_buffer_pool lo_pool(1024, lp_budget);
 
     lo_pool.init(4);
@@ -165,20 +163,18 @@ TEST_F(c_p8_buffer_pool_test, stat_tracks_outstanding_after_acquire)
     ASSERT_NE(lp_buf2, nullptr);
     ASSERT_NE(lp_buf3, nullptr);
 
-    // 3 of 4 buffers outstanding: free shrinks, allocated pool stays at 4.
-    EXPECT_EQ(lo_stat.mz_free_size, 1u * 1024u);
-    EXPECT_EQ(lo_stat.mz_allocated_size, 4u * 1024u);
-    // 25% free => at the pressure threshold (< 25 would wake the worker).
-    EXPECT_EQ(lo_stat.mz_free_size * 100ull / lo_stat.mz_allocated_size, 25u);
+    // 3 buffers outstanding: free = max - outstanding, max stays at the budget.
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    EXPECT_EQ(lo_stat.mz_free_size, (8u - 3u) * 1024u);
 
     lo_pool.recycle(lp_buf1);
     lo_pool.recycle(lp_buf2);
     lo_pool.recycle(lp_buf3);
 }
 
-TEST_F(c_p8_buffer_pool_test, stat_allocated_grows_with_on_demand_growth)
+TEST_F(c_p8_buffer_pool_test, stat_free_shrinks_with_on_demand_growth)
 {
-    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(8u * 1024u);
     cp8_buffer_pool lo_pool(1024, lp_budget);
 
     lo_pool.init(1);
@@ -194,9 +190,10 @@ TEST_F(c_p8_buffer_pool_test, stat_allocated_grows_with_on_demand_growth)
     ASSERT_NE(lp_buf1, nullptr);
     ASSERT_NE(lp_buf2, nullptr);
 
-    // pool grew on demand from 1 to 2 buffers, both outstanding
-    EXPECT_EQ(lo_stat.mz_free_size, 0u);
-    EXPECT_EQ(lo_stat.mz_allocated_size, 2u * 1024u);
+    // pool grew on demand from 1 to 2 buffers, both outstanding: free drops by
+    // 2 buffers off the budget cap.
+    EXPECT_EQ(lo_stat.mz_max_size, 8u * 1024u);
+    EXPECT_EQ(lo_stat.mz_free_size, (8u - 2u) * 1024u);
 
     lo_pool.recycle(lp_buf1);
     lo_pool.recycle(lp_buf2);

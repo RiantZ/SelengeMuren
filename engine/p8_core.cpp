@@ -706,15 +706,13 @@ uint8_t *cp8_core::acquire_buffer()
     }
 
     // Track pool pressure: when free memory drops below P8_CORE_FREE_MEM_PERCENT
-    // of the *allocated* pool (buffers that actually exist, not the budget cap),
-    // wake the worker so it pulls from all writers. Judging against the budget
-    // max would make an infinite/default budget read as permanent pressure and
-    // wake the worker on every acquire. Debounced: skip the wake if a previous
-    // pressure notify is still unhandled, so a burst of acquiring threads does
-    // not storm the worker with redundant set() calls (each a pthread lock + a
-    // counting-semaphore post).
-    if(ls_stat.mz_allocated_size > 0
-       && (ls_stat.mz_free_size * 100ull / ls_stat.mz_allocated_size) < P8_CORE_FREE_MEM_PERCENT)
+    // of the budget max, wake the worker so it pulls from all writers. Free
+    // memory here is the exact budget headroom (max - outstanding), so a pool
+    // that has grown only partially is not treated as being under pressure.
+    // Debounced: skip the wake if a previous pressure notify is still unhandled,
+    // so a burst of acquiring threads does not storm the worker with redundant
+    // set() calls (each a pthread lock + a counting-semaphore post).
+    if(ls_stat.mz_max_size > 0 && (ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
     {
         notify_pressure();
     }

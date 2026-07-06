@@ -22,13 +22,15 @@ public:
     struct s_stat
     {
         size_t mz_buffer_size;
+        // Exact free space: budget headroom that has not been handed out yet,
+        // i.e. max - outstanding. This counts memory that is not yet allocated
+        // as free, so a pool that has grown only partially is not reported as
+        // being under pressure.
         size_t mz_free_size;
-        // Bytes currently backed by real allocations (free + outstanding), i.e.
-        // mo_all * mz_buffer_size. This is the *allocated* pool size, not the
-        // budget cap: pressure must be judged against memory that actually
-        // exists, so an infinite/default budget does not read as permanent
-        // pressure.
-        size_t mz_allocated_size;
+        // The budget cap this pool draws from (mp_budget->get_max()), i.e. the
+        // maximum memory the pool may ever occupy — not the currently allocated
+        // amount.
+        size_t mz_max_size;
     };
 
 public:
