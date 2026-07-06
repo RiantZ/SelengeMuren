@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <latch>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <unordered_set>
@@ -116,6 +117,89 @@ TEST_F(c_p8_buffer_pool_test, acquire_returns_null_when_budget_exhausted)
 
     lo_pool.recycle(lp_buf2);
     lo_pool.recycle(lp_buf4);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_reports_allocated_pool_not_budget_max)
+{
+    // Regression for the degenerate pressure heuristic: stat() must report the
+    // *allocated* pool size (free + outstanding), never the budget cap. An
+    // infinite/default budget must therefore never read as permanent pressure.
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(4);
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.lock();
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    EXPECT_EQ(lo_stat.mz_buffer_size, 1024u);
+    EXPECT_EQ(lo_stat.mz_free_size, 4u * 1024u);
+    // allocated = free + outstanding; with an infinite budget it must equal the
+    // real pool, not SIZE_MAX.
+    EXPECT_EQ(lo_stat.mz_allocated_size, 4u * 1024u);
+    EXPECT_NE(lo_stat.mz_allocated_size, std::numeric_limits<size_t>::max());
+
+    // 100% free => not under pressure even though the budget is infinite.
+    EXPECT_GE(lo_stat.mz_free_size * 100ull / lo_stat.mz_allocated_size, 25u);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_tracks_outstanding_after_acquire)
+{
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(4);
+
+    lo_pool.lock();
+    uint8_t *lp_buf1                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf3                = lo_pool.acquire_no_lock();
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    ASSERT_NE(lp_buf1, nullptr);
+    ASSERT_NE(lp_buf2, nullptr);
+    ASSERT_NE(lp_buf3, nullptr);
+
+    // 3 of 4 buffers outstanding: free shrinks, allocated pool stays at 4.
+    EXPECT_EQ(lo_stat.mz_free_size, 1u * 1024u);
+    EXPECT_EQ(lo_stat.mz_allocated_size, 4u * 1024u);
+    // 25% free => at the pressure threshold (< 25 would wake the worker).
+    EXPECT_EQ(lo_stat.mz_free_size * 100ull / lo_stat.mz_allocated_size, 25u);
+
+    lo_pool.recycle(lp_buf1);
+    lo_pool.recycle(lp_buf2);
+    lo_pool.recycle(lp_buf3);
+}
+
+TEST_F(c_p8_buffer_pool_test, stat_allocated_grows_with_on_demand_growth)
+{
+    auto            lp_budget = std::make_shared<cp8_memory_budget>(std::numeric_limits<size_t>::max());
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+
+    lo_pool.init(1);
+
+    lo_pool.lock();
+    uint8_t *lp_buf1                = lo_pool.acquire_no_lock();
+    uint8_t *lp_buf2                = lo_pool.acquire_no_lock();
+
+    cp8_buffer_pool::s_stat lo_stat = {};
+    lo_pool.stat(lo_stat);
+    lo_pool.unlock();
+
+    ASSERT_NE(lp_buf1, nullptr);
+    ASSERT_NE(lp_buf2, nullptr);
+
+    // pool grew on demand from 1 to 2 buffers, both outstanding
+    EXPECT_EQ(lo_stat.mz_free_size, 0u);
+    EXPECT_EQ(lo_stat.mz_allocated_size, 2u * 1024u);
+
+    lo_pool.recycle(lp_buf1);
+    lo_pool.recycle(lp_buf2);
 }
 
 TEST_F(c_p8_buffer_pool_test, recycle_null_is_safe)

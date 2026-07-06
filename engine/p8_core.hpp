@@ -22,9 +22,11 @@
 #define P8_CORE_ACQUIRE_TIMEOUT_MS 100
 #define P8_CORE_THREAD_TIMEOUT_MS  50
 
-// When outstanding (acquired-but-not-recycled) data buffers reach this percentage
-// of the total allocated pool, acquire_buffer wakes the worker so it can pull
-// accumulated buffers from all writers.
+// When free data-buffer memory drops below this percentage of the total
+// *allocated* pool (buffers that actually exist, i.e. free + outstanding — not
+// the budget cap), acquire_buffer wakes the worker so it can pull accumulated
+// buffers from all writers. Measuring against allocated memory keeps an
+// infinite/default budget from reading as permanent pressure.
 #define P8_CORE_FREE_MEM_PERCENT   25
 
 class cp8_tls_writer;

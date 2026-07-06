@@ -23,7 +23,12 @@ public:
     {
         size_t mz_buffer_size;
         size_t mz_free_size;
-        size_t mz_max_size;
+        // Bytes currently backed by real allocations (free + outstanding), i.e.
+        // mo_all * mz_buffer_size. This is the *allocated* pool size, not the
+        // budget cap: pressure must be judged against memory that actually
+        // exists, so an infinite/default budget does not read as permanent
+        // pressure.
+        size_t mz_allocated_size;
     };
 
 public:

@@ -102,9 +102,9 @@ uint8_t *cp8_buffer_pool::acquire_no_lock()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_buffer_pool::stat(cp8_buffer_pool::s_stat &or_stat)
 {
-    or_stat.mz_buffer_size = mz_buffer_size;
-    or_stat.mz_max_size    = mp_budget->get_max();
-    or_stat.mz_free_size   = mo_free.size() * mz_buffer_size;
+    or_stat.mz_buffer_size    = mz_buffer_size;
+    or_stat.mz_free_size      = mo_free.size() * mz_buffer_size;
+    or_stat.mz_allocated_size = mo_all.size() * mz_buffer_size;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

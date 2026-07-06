@@ -253,29 +253,48 @@ TEST_F(c_log_fragment_test, consecutive_sends_after_fragment)
 
 TEST_F(c_log_fragment_test, very_large_string_spans_many_buffers)
 {
-    size_t lz_buf_sz = p8_test_get_buffer_size();
+    // Run the logging on a fresh thread so its thread-local writer binds to the
+    // pristine tiny core created in SetUp and is fully torn down on join. The
+    // process-global TLS writer used by the main thread outlives p8_release and
+    // stays bound to whichever core it first saw, so across --gtest_repeat runs
+    // it accumulates outstanding buffers on a stale 16-buffer pool. A record
+    // this large needs ~11 of those 16 buffers held at once, so any leaked
+    // outstanding buffer makes acquire_buffer fail mid-record and drops the log.
+    // A dedicated thread guarantees an all-free pool per test. Same isolation
+    // trick as discard_when_pool_exhausted.
+    bool lb_huge_sent  = false;
+    bool lb_after_sent = false;
 
-    std::string lo_huge(lz_buf_sz * 10, 'G');
+    std::thread lo_thread(
+        [&lb_huge_sent, &lb_after_sent]()
+        {
+            size_t      lz_buf_sz = p8_test_get_buffer_size();
+            std::string lo_huge(lz_buf_sz * 10, 'G');
 
-    EXPECT_TRUE(p8_log_sent(e_p8_trace0,
-                            nullptr,
-                            0,
-                            static_cast<uint32_t>(__LINE__),
-                            __FILE__,
-                            __FUNCTION__,
-                            0,
-                            nullptr,
-                            "payload: %s",
-                            lo_huge.c_str()));
+            lb_huge_sent  = p8_log_sent(e_p8_trace0,
+                                        nullptr,
+                                        0,
+                                        static_cast<uint32_t>(__LINE__),
+                                        __FILE__,
+                                        __FUNCTION__,
+                                        0,
+                                        nullptr,
+                                        "payload: %s",
+                                        lo_huge.c_str());
 
-    EXPECT_TRUE(p8_log_sent(e_p8_trace0,
-                            nullptr,
-                            0,
-                            static_cast<uint32_t>(__LINE__),
-                            __FILE__,
-                            __FUNCTION__,
-                            0,
-                            nullptr,
-                            "after huge: %d",
-                            42));
+            lb_after_sent = p8_log_sent(e_p8_trace0,
+                                        nullptr,
+                                        0,
+                                        static_cast<uint32_t>(__LINE__),
+                                        __FILE__,
+                                        __FUNCTION__,
+                                        0,
+                                        nullptr,
+                                        "after huge: %d",
+                                        42);
+        });
+    lo_thread.join();
+
+    EXPECT_TRUE(lb_huge_sent);
+    EXPECT_TRUE(lb_after_sent);
 }

@@ -277,8 +277,9 @@ void cp8_core::release()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 bool cp8_core::init_buffer_pool(const char *ip_max_memory_size, const char *ip_initial_memory_size)
 {
-    size_t lz_max_memory_size     = std::numeric_limits<size_t>::max();
+    // N.B.: If you will modify this values, please update @doc/config_example.json:4-12
     size_t lz_initial_memory_size = 1024 * 1024;
+    size_t lz_max_memory_size     = 16 * lz_initial_memory_size;
 
     if(ip_max_memory_size)
     {
@@ -704,12 +705,16 @@ uint8_t *cp8_core::acquire_buffer()
         return nullptr;
     }
 
-    // Track pool pressure: when outstanding buffers reach P8_CORE_FREE_MEM_PERCENT
-    // of the allocated pool, wake the worker so it pulls from all writers.
-    // Debounced: skip the wake if a previous pressure notify is still unhandled,
-    // so a burst of acquiring threads does not storm the worker with redundant
-    // set() calls (each a pthread lock + counting-semaphore post).
-    if((ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
+    // Track pool pressure: when free memory drops below P8_CORE_FREE_MEM_PERCENT
+    // of the *allocated* pool (buffers that actually exist, not the budget cap),
+    // wake the worker so it pulls from all writers. Judging against the budget
+    // max would make an infinite/default budget read as permanent pressure and
+    // wake the worker on every acquire. Debounced: skip the wake if a previous
+    // pressure notify is still unhandled, so a burst of acquiring threads does
+    // not storm the worker with redundant set() calls (each a pthread lock + a
+    // counting-semaphore post).
+    if(ls_stat.mz_allocated_size > 0
+       && (ls_stat.mz_free_size * 100ull / ls_stat.mz_allocated_size) < P8_CORE_FREE_MEM_PERCENT)
     {
         notify_pressure();
     }
