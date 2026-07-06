@@ -1,12 +1,70 @@
 {
-    //Library sink, supported values: file.bin, network.tcp, null
-    "sink": "file.bin",
-    //Sink destination: hdd/network path or {IP v4/IP v5/host name}:port
-    "destination": "",
-    //Maximum memory size (in bytes) that the library is allowed to allocate. Memory starts at initial_memory_size and grows on demand up to this limit.
-    //For setting the size use suffix KB, MB, Ki, Mi or set infinit to use memory without limit (not reccomended)
-    "max_memory_size": "1MB",
-    //initial library memory allocation, 
-    //For setting the size use suffix KB, MB, Ki, Mi
-    "initial_memory_size": "128KB"
+    //Name of the logging session, if skipped - name of the hosting process is used instead
+    "Name": "MySession",
+    //Maximum memory the engine may use for its buffer pool.
+    //Accepted forms: bare bytes ("1048576"), "<N>KB"/"<N>Ki", "<N>MB"/"<N>Mi", or "infinite".
+    //default : 16MB
+    "max_memory_size": "16MB",
+    //Memory reserved up front for the buffer pool. Same accepted forms as "max_memory_size".
+    //Clamped down to "max_memory_size" when larger.
+    //default : 1MB
+    "initial_memory_size": "1MB",
+    //internal library logging, next options available
+    // * stdout - to console
+    // * filepath - to text file, for example "./mylogfile.txt"
+    // * null - no logging
+    "logging": "null",
+    "Modules": [
+        //Verbosity values: Trace, Debug, Info, Warning, Error, Critical
+        {
+            "_": "Trace"
+        }, //default verbosity for all traces with no module
+        {
+            "MyModule1": "Debug"
+        },
+        {
+            "MyModule2": "Debug"
+        }
+    ],
+    //Available sinks:
+    //Recognized by the engine (source of truth: code):
+    // * file.bin    - Deliver to binary file (see "FileBin" section)
+    // * network.tcp - Deliver over network via TCP (not implemented yet -> falls back to null)
+    // * null        - drop
+    //Documented but NOT recognized by the current engine:
+    // * Baigal - Deliver to Baigal over network
+    // * Auto   - Deliver to Baigal, if server is OFF -> to bin file
+    "sink": "Baigal",
+    "Baigal": {
+        //server address, IPV4 address : XXX.XXX.XXX.XXX, IPV6 address : ::1, etc. NetBios Name
+        "RemoteIp": "::1",
+        "RemotePort": "1008",
+        //size of the data packet, Min: 512, Max: 65535, default = 0 (auto: most optimum)
+        "PacketSize": "0",
+        //server timeout in milliseconds
+        "TimeoutMs": "2000"
+    },
+    "FileBin": {
+        //Output directory for the binary log files. A per-run subdirectory
+        //(process name + pid + UTC timestamp) is created inside it. Required for the "file.bin" sink.
+        "OutDir": "./mySubDir/myLogDir",
+        //Rolling type:
+        //* Xmb     - rolling every X megabytes, for example 10MB
+        //* Xhr     - rolling every X hours, for example 24HR, max = 1000HR
+        //* HH:MMtm - rolling by time (00:00 -> 23:59), for example:
+        //   * rolling at 12:00 -> 12:00tm
+        //   * rolling at 12:00 and 00:00 -> 00:00,12:00tm
+        // * off
+        "Roll": "off",
+        //Maximum P8 logs files in destination folder "OutDir".
+        //In case if count of files is larger than specified value - oldest files will be removed
+        //default : 0 (off)
+        //max     : 4096
+        "MaxFiles": "0",
+        //Value: define maximum P8 logs files cumulative size in MB at destination folder "OutDir".
+        //In case if size of files is larger than specified value - oldest files will be removed.
+        //default : 0 (off)
+        //max     : 4294967296
+        "MaxSizeMB": "0"
+    }
 }
