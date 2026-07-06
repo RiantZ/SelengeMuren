@@ -158,6 +158,10 @@ private:
     // data memory pool, uses & depends on mp_memory_budget
     cp8_buffer_pool *mp_data_pool           = nullptr;
 
+    // data buffers acquired from mp_data_pool but not yet recycled. Used by
+    // acquire_buffer to detect pool pressure and wake the worker.
+    std::atomic<size_t> mu_outstanding_buffers { 0 };
+
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;
     std::mutex                          mo_log_desc_mutex;

@@ -509,11 +509,9 @@ void cp8_core::worker_main()
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::notify()
-{
-    mo_worker_event.set(mu_event_wake);
-}
+        // recycle the consumed service buffers back to the pool
+        lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
+                      kit::e_c_lst_pool_policy::e_keep);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::notify_pressure()
@@ -524,6 +522,7 @@ void cp8_core::notify_pressure()
     {
         return;
     }
+}
 
     // Claim the wake. Only the thread that flips false->true pays for set();
     // the worker clears the flag after wait(), re-arming the next pressure wake.
@@ -729,6 +728,7 @@ void cp8_core::release_buffer(uint8_t *ip_buffer)
     }
 
     mp_data_pool->recycle(ip_buffer);
+    mu_outstanding_buffers.fetch_sub(1, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
