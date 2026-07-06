@@ -211,7 +211,6 @@ private:
     friend void                                     p8_test_clear_captured_buffers();
     friend size_t                                   p8_test_get_writer_count();
     friend cp8_tls_writer                          *p8_test_get_writers_head();
-    friend size_t                                   p8_test_get_outstanding_buffers();
     friend void                                     p8_test_drain_writers();
 
     // When capture is enabled the worker leaves data buffers untouched so the

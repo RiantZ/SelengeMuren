@@ -574,9 +574,7 @@ TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
         __FILE__);
     ASSERT_TRUE(lo_ctx.mb_result);
 
-    auto   lo_parsed  = parse_captured_buffers();
-    size_t lz_size    = sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size;
-    lz_size          += 8u - lz_size & 7u;
+    auto lo_parsed = parse_captured_buffers();
 
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
               expected_item_size(sizeof(s_p8_log_item_dat) + lo_parsed.mo_item_hdr.mu_args_size));

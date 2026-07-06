@@ -311,7 +311,7 @@ void report_per_thread(const std::vector<double> &ir_thread_ns, uint32_t iu_iter
 // concurrency levels.
 static const uint32_t ga_perf_thread_counts[] = { 1, 2, 4, 8 };
 
-class c_log_perf_file_sink_full_cycle_test : public ::testing::TestWithParam<uint32_t>
+class c_log_perf_null_sink_full_cycle_test : public ::testing::TestWithParam<uint32_t>
 {
 protected:
     void TearDown() override
@@ -320,7 +320,7 @@ protected:
     }
 };
 
-TEST_P(c_log_perf_file_sink_full_cycle_test, DISABLED_full_cycle)
+TEST_P(c_log_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 {
     const uint32_t lu_threads    = GetParam();
 
@@ -355,5 +355,5 @@ TEST_P(c_log_perf_file_sink_full_cycle_test, DISABLED_full_cycle)
 }
 
 INSTANTIATE_TEST_SUITE_P(ThreadCounts,
-                         c_log_perf_file_sink_full_cycle_test,
+                         c_log_perf_null_sink_full_cycle_test,
                          ::testing::ValuesIn(ga_perf_thread_counts));

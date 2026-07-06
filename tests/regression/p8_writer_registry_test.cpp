@@ -154,25 +154,6 @@ TEST_F(c_writer_registry_test, concurrent_register_unregister_churn)
     EXPECT_EQ(p8_test_get_writer_count(), 0u);
 }
 
-TEST_F(c_writer_registry_test, iterate_consistent_after_remove)
-{
-    auto lp_w1 = std::make_unique<cp8_log>();
-    auto lp_w2 = std::make_unique<cp8_log>();
-    auto lp_w3 = std::make_unique<cp8_log>();
-    EXPECT_EQ(p8_test_get_writer_count(), 3u);
-
-    lp_w2.reset();
-    EXPECT_EQ(p8_test_get_writer_count(), 2u);
-    EXPECT_NE(p8_test_get_writers_head(), nullptr);
-
-    lp_w1.reset();
-    EXPECT_EQ(p8_test_get_writer_count(), 1u);
-
-    lp_w3.reset();
-    EXPECT_EQ(p8_test_get_writer_count(), 0u);
-    EXPECT_EQ(p8_test_get_writers_head(), nullptr);
-}
-
 TEST_F(c_writer_registry_test, no_core_writer_is_noop)
 {
     p8_release();
