@@ -39,10 +39,37 @@
       "inherits": "linux",
       "binaryDir": "${sourceDir}/_Build_lnx_debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-tracy",
+      "inherits": "windows",
+      "cacheVariables": { "P8_ENABLE_TRACY": "ON" }
+    },
+    {
+      "name": "macos-tracy",
+      "inherits": "macos",
+      "cacheVariables": { "P8_ENABLE_TRACY": "ON" }
+    },
+    {
+      "name": "linux-tracy",
+      "inherits": "linux",
+      "cacheVariables": { "P8_ENABLE_TRACY": "ON" }
+    },
+    {
+      "name": "macos-debug-tracy",
+      "inherits": "macos-debug",
+      "cacheVariables": { "P8_ENABLE_TRACY": "ON" }
+    },
+    {
+      "name": "linux-debug-tracy",
+      "inherits": "linux-debug",
+      "cacheVariables": { "P8_ENABLE_TRACY": "ON" }
     }
   ],
   "buildPresets": [
     { "name": "macos-debug", "configurePreset": "macos-debug" },
-    { "name": "linux-debug", "configurePreset": "linux-debug" }
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "macos-debug-tracy", "configurePreset": "macos-debug-tracy" },
+    { "name": "linux-debug-tracy", "configurePreset": "linux-debug-tracy" }
   ]
 }
