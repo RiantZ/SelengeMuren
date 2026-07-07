@@ -436,6 +436,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         mp_buffer = mp_core->acquire_buffer();
         if(!mp_buffer) [[unlikely]]
         {
+            mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
@@ -704,7 +705,7 @@ lbl_discard:
     }
     mp_buffer   = nullptr;
     mz_buf_used = 0;
-    ++mu_dropped_records;
+    mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
 
     return false;
 }
@@ -788,11 +789,3 @@ extern "C"
     }
 
 } // extern "C"
-
-#ifdef P8_TESTING
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-uint64_t p8_test_get_tls_dropped_records()
-{
-    return go_tls_log.get_dropped_records();
-}
-#endif

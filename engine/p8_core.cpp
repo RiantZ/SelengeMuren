@@ -438,6 +438,18 @@ void cp8_core::worker_main()
     // best-effort: raising priority typically needs elevated privileges, failure is non-fatal
     kit::set_thread_priority(kit::e_tp_time_critical);
 
+    // Stats-poll cadence: the loop wakes irregularly (event or timeout), so gate
+    // the drop-counter poll on a monotonic clock rather than an iteration count.
+    // Precompute the interval in ticks once so the per-iteration test is just a
+    // subtract-and-compare.
+    uint64_t lu_stats_numer = 0;
+    uint64_t lu_stats_denom = 0;
+    kit::get_hires_ticks_freq(lu_stats_numer, lu_stats_denom);
+    const uint64_t lu_stats_poll_ticks = lu_stats_numer ? static_cast<uint64_t>(P8_CORE_STATS_POLL_INTERVAL_MS)
+                                                              * 1000000ULL * lu_stats_denom / lu_stats_numer
+                                                        : 0;
+    uint64_t       lu_stats_last_ticks = kit::get_hires_ticks();
+
     for(;;)
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
@@ -482,6 +494,18 @@ void cp8_core::worker_main()
 
             // pull accumulated buffers from every live writer into the same batch
             drain_writers(lo_ready);
+
+            // On the stats cadence, pull-and-reset every writer's drop counters
+            // into the core accumulators.
+            if(lu_stats_poll_ticks)
+            {
+                uint64_t lu_now_ticks = kit::get_hires_ticks();
+                if((lu_now_ticks - lu_stats_last_ticks) >= lu_stats_poll_ticks)
+                {
+                    poll_dropped_stats();
+                    lu_stats_last_ticks = lu_now_ticks;
+                }
+            }
 
             // Clear the pressure-wake debounce before draining. Every drain (wake,
             // submit, or timeout) pulls from all writers and relieves pressure, so
@@ -808,6 +832,43 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 
     // Plot the drained buffer count on function exit. No-op without *-tracy.
     P8_PROF_PLOT("drain_writers io_data.size", static_cast<int64_t>(io_data.size()));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::poll_dropped_stats()
+{
+    s_p8_drop_stats lo_sum { 0, 0, 0 };
+
+    {
+        std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
+        for(cp8_tls_writer *lp_writer = mp_writers_head; lp_writer; lp_writer = lp_writer->mp_next_writer)
+        {
+            s_p8_drop_stats lo_writer  = lp_writer->pull_dropped();
+            lo_sum.mu_logs            += lo_writer.mu_logs;
+            lo_sum.mu_metrics         += lo_writer.mu_metrics;
+            lo_sum.mu_traces          += lo_writer.mu_traces;
+        }
+    }
+
+    accumulate_dropped(lo_sum);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::accumulate_dropped(const s_p8_drop_stats &ir_stats)
+{
+    mu_dropped_logs.fetch_add(ir_stats.mu_logs, std::memory_order_relaxed);
+    mu_dropped_metrics.fetch_add(ir_stats.mu_metrics, std::memory_order_relaxed);
+    mu_dropped_traces.fetch_add(ir_stats.mu_traces, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_drop_stats cp8_core::get_dropped_stats() const
+{
+    s_p8_drop_stats lo_stats;
+    lo_stats.mu_logs    = mu_dropped_logs.load(std::memory_order_relaxed);
+    lo_stats.mu_metrics = mu_dropped_metrics.load(std::memory_order_relaxed);
+    lo_stats.mu_traces  = mu_dropped_traces.load(std::memory_order_relaxed);
+    return lo_stats;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1364,6 +1425,12 @@ size_t p8_test_get_writer_count()
 cp8_tls_writer *p8_test_get_writers_head()
 {
     return gp_instance ? gp_instance->get_writers_head() : nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_drop_stats p8_test_get_dropped_stats()
+{
+    return gp_instance ? gp_instance->get_dropped_stats() : s_p8_drop_stats { 0, 0, 0 };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

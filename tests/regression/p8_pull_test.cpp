@@ -149,12 +149,11 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
     p8_test_enable_buffer_capture();
     ASSERT_EQ(p8_test_get_free_buffers_count(), 4u);
 
-    bool     lb_r3      = true;
-    uint64_t lu_dropped = 0;
-    size_t   lz_capture = 0;
+    bool   lb_r3      = true;
+    size_t lz_capture = 0;
 
     std::thread lo_thread(
-        [&lb_r3, &lu_dropped, &lz_capture]()
+        [&lb_r3, &lz_capture]()
         {
             const size_t lz_buf_sz   = p8_test_get_buffer_size();
             // size the string so the record all but fills its buffer, leaving
@@ -189,18 +188,16 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
 
             // R3 -> huge, exhausts the remaining pool and is discarded
             std::string lo_huge(lz_buf_sz * 3, 'Z');
-            lb_r3      = p8_log_sent(e_p8_trace0,
-                                     nullptr,
-                                     0,
-                                     static_cast<uint32_t>(__LINE__),
-                                     __FILE__,
-                                     __FUNCTION__,
-                                     0,
-                                     nullptr,
-                                     "%s",
-                                     lo_huge.c_str());
-
-            lu_dropped = p8_test_get_tls_dropped_records();
+            lb_r3 = p8_log_sent(e_p8_trace0,
+                                nullptr,
+                                0,
+                                static_cast<uint32_t>(__LINE__),
+                                __FILE__,
+                                __FUNCTION__,
+                                0,
+                                nullptr,
+                                "%s",
+                                lo_huge.c_str());
 
             // pull the survivors from this still-live writer
             p8_test_drain_writers();
@@ -209,7 +206,9 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
     lo_thread.join();
 
     EXPECT_FALSE(lb_r3);
-    EXPECT_EQ(lu_dropped, 1u);
+    // the discarded record is now visible through the core loss statistics,
+    // flushed there when the producer thread's writer was destroyed on join
+    EXPECT_EQ(p8_test_get_dropped_stats().mu_logs, 1u);
     // the two earlier complete records (buffers A and B) were not rolled back
     EXPECT_GE(lz_capture, 2u);
 }

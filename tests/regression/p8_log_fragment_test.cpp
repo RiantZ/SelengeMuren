@@ -177,31 +177,30 @@ TEST_F(c_log_fragment_test, discard_when_pool_exhausted)
     ASSERT_TRUE(p8_initialize(&lo_config));
     ASSERT_EQ(p8_test_get_free_buffers_count(), 1u);
 
-    bool        lb_result  = true;
-    uint64_t    lu_dropped = 0;
+    bool        lb_result = true;
     std::thread lo_thread(
-        [&lb_result, &lu_dropped]()
+        [&lb_result]()
         {
             size_t      lz_buf_sz = p8_test_get_buffer_size();
             std::string lo_huge(lz_buf_sz * 2, 'D');
 
-            lb_result  = p8_log_sent(e_p8_trace0,
-                                     nullptr,
-                                     0,
-                                     static_cast<uint32_t>(__LINE__),
-                                     __FILE__,
-                                     __FUNCTION__,
-                                     0,
-                                     nullptr,
-                                     "%s",
-                                     lo_huge.c_str());
-            lu_dropped = p8_test_get_tls_dropped_records();
+            lb_result = p8_log_sent(e_p8_trace0,
+                                    nullptr,
+                                    0,
+                                    static_cast<uint32_t>(__LINE__),
+                                    __FILE__,
+                                    __FUNCTION__,
+                                    0,
+                                    nullptr,
+                                    "%s",
+                                    lo_huge.c_str());
         });
     lo_thread.join();
 
     EXPECT_FALSE(lb_result);
-    // the discarded record must be accounted for in the per-writer counter
-    EXPECT_EQ(lu_dropped, 1u);
+    // the discarded record is now visible through the core loss statistics,
+    // flushed there when the producer thread's writer was destroyed on join
+    EXPECT_EQ(p8_test_get_dropped_stats().mu_logs, 1u);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

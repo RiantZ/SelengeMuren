@@ -27,6 +27,9 @@ cp8_tls_writer::~cp8_tls_writer()
     if(mp_core)
     {
         core_push();
+        // Flush any residual drop counts before leaving the registry so a
+        // short-lived thread's losses are never lost.
+        mp_core->accumulate_dropped(pull_dropped());
         mp_core->unregister_writer(this);
         mp_core->release();
         mp_core = nullptr;
@@ -145,6 +148,16 @@ void cp8_tls_writer::pull(kit::c_lst<uint8_t *> &io_data)
         mp_buffer   = nullptr;
         mz_buf_used = 0;
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_drop_stats cp8_tls_writer::pull_dropped()
+{
+    s_p8_drop_stats lo_stats;
+    lo_stats.mu_logs    = mu_dropped_logs.exchange(0, std::memory_order_relaxed);
+    lo_stats.mu_metrics = mu_dropped_metrics.exchange(0, std::memory_order_relaxed);
+    lo_stats.mu_traces  = mu_dropped_traces.exchange(0, std::memory_order_relaxed);
+    return lo_stats;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

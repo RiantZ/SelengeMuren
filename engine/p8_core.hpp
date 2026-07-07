@@ -19,18 +19,33 @@
 #include <unordered_map>
 #include <vector>
 
-#define P8_CORE_ACQUIRE_TIMEOUT_MS 100
-#define P8_CORE_THREAD_TIMEOUT_MS  50
+#define P8_CORE_ACQUIRE_TIMEOUT_MS     100
+#define P8_CORE_THREAD_TIMEOUT_MS      50
+
+// Cadence at which the worker pulls-and-resets the per-writer drop counters and
+// folds them into the core loss accumulators. The loop wakes irregularly, so
+// this is enforced against a monotonic clock, not an iteration count.
+#define P8_CORE_STATS_POLL_INTERVAL_MS 250
 
 // When free data-buffer memory drops below this percentage of the total
 // *allocated* pool (buffers that actually exist, i.e. free + outstanding — not
 // the budget cap), acquire_buffer wakes the worker so it can pull accumulated
 // buffers from all writers. Measuring against allocated memory keeps an
 // infinite/default budget from reading as permanent pressure.
-#define P8_CORE_FREE_MEM_PERCENT   25
+#define P8_CORE_FREE_MEM_PERCENT       25
 
 class cp8_tls_writer;
 struct s_p8_log_desc;
+
+// Aggregated count of telemetry elements dropped before reaching the sink,
+// split by kind. Returned by cp8_core::get_dropped_stats() and by each writer's
+// pull_dropped().
+struct s_p8_drop_stats
+{
+    uint64_t mu_logs;
+    uint64_t mu_metrics;
+    uint64_t mu_traces;
+};
 
 struct s_p8_attr_desc
 {
@@ -60,6 +75,12 @@ public:
     // TLS writer registry
     void register_writer(cp8_tls_writer *ip_writer);
     void unregister_writer(cp8_tls_writer *ip_writer);
+
+    // loss statistics: running totals of dropped logs/metrics/traces. Both the
+    // worker's periodic poll and each writer's destructor flush feed
+    // accumulate_dropped; get_dropped_stats returns a lock-free snapshot.
+    void            accumulate_dropped(const s_p8_drop_stats &ir_stats);
+    s_p8_drop_stats get_dropped_stats() const;
 
     // thread
     bool register_current_thread(const char *ip_name);
@@ -128,6 +149,11 @@ private:
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
 
+    // Pull-and-reset every registered writer's drop counters and fold them into
+    // the core accumulators. Runs on the worker's P8_CORE_STATS_POLL_INTERVAL_MS
+    // cadence. Takes mo_writers_lock; the per-writer pull is lock-free.
+    void poll_dropped_stats();
+
     // Write a batch of ready data buffers to the sink and recycle them. Single
     // choke point for both the worker-pull path and the writer-shutdown ready
     // queue, and the only place data buffers are captured under P8_TESTING.
@@ -161,6 +187,13 @@ private:
     // data buffers acquired from mp_data_pool but not yet recycled. Used by
     // acquire_buffer to detect pool pressure and wake the worker.
     std::atomic<size_t> mu_outstanding_buffers { 0 };
+
+    // Running totals of dropped telemetry elements, fed by poll_dropped_stats()
+    // on the worker cadence and by each writer's destructor flush. Monotonic;
+    // read lock-free via get_dropped_stats(). Only logs are wired today.
+    std::atomic<uint64_t> mu_dropped_logs { 0 };
+    std::atomic<uint64_t> mu_dropped_metrics { 0 };
+    std::atomic<uint64_t> mu_dropped_traces { 0 };
 
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;
@@ -242,4 +275,5 @@ size_t                                   p8_test_get_writer_count();
 cp8_tls_writer                          *p8_test_get_writers_head();
 std::vector<std::vector<uint8_t>>        p8_test_get_service_buffers();
 void                                     p8_test_drain_writers();
+s_p8_drop_stats                          p8_test_get_dropped_stats();
 #endif
