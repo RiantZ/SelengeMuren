@@ -6,11 +6,37 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace
+{
+// Build a memory config sized in whole buffers so the fixture stays correct
+// regardless of the compile-time buffer size.
+std::string make_mem_config(size_t iz_buffers)
+{
+    const size_t      lz_bytes = iz_buffers * p8_test_get_buffer_size();
+    const std::string ls       = std::to_string(lz_bytes);
+    return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
+           + "\": \"" + ls + "\"}";
+}
+
+// Largest single-string payload that still spans more than one buffer (when the
+// buffer is smaller than the wire cap) while keeping the whole log item within
+// the uint16 mu_size field (item header + length prefix + body + padding must
+// stay <= UINT16_MAX). The 1 KB headroom covers the item header, extra fixed
+// args, and any attribute prefix across the fragmentation tests. Keeps them
+// exercising real multi-buffer splits regardless of the compile-time buffer
+// size (a 32 KB buffer still fragments a ~64 KB body across buffers).
+size_t frag_string_len(size_t iz_buf_sz)
+{
+    return std::min(iz_buf_sz * 2, static_cast<size_t>(UINT16_MAX) - 1024);
+}
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // helpers: reassemble captured buffers into a linear payload
@@ -242,11 +268,9 @@ class c_log_content_test : public ::testing::Test
 protected:
     void SetUp() override
     {
+        const std::string  ls_config = make_mem_config(/*buffers*/ 16);
         struct s_p8_config lo_config = {};
-        lo_config.mp_json_config     = "{"
-                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"128KB\","
-                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"128KB\""
-                                       "}";
+        lo_config.mp_json_config     = ls_config.c_str();
         ASSERT_TRUE(p8_initialize(&lo_config));
         p8_test_enable_buffer_capture();
     }
@@ -886,11 +910,12 @@ TEST_F(c_log_content_test, fragment_flag_on_continuation)
 
 TEST_F(c_log_content_test, fragment_string_content)
 {
-    size_t lz_buf_sz = p8_test_get_buffer_size();
+    size_t lz_buf_sz    = p8_test_get_buffer_size();
 
-    std::string lo_pattern;
-    lo_pattern.reserve(lz_buf_sz * 2);
-    for(size_t lz_i = 0; lz_i < lz_buf_sz * 2; ++lz_i)
+    const size_t lz_len = frag_string_len(lz_buf_sz);
+    std::string  lo_pattern;
+    lo_pattern.reserve(lz_len);
+    for(size_t lz_i = 0; lz_i < lz_len; ++lz_i)
     {
         lo_pattern.push_back(static_cast<char>('A' + (lz_i % 26)));
     }
@@ -923,9 +948,14 @@ TEST_F(c_log_content_test, fragment_string_content)
 
 TEST_F(c_log_content_test, fragment_args_size_spans_buffers)
 {
-    size_t lz_buf_sz = p8_test_get_buffer_size();
+    size_t lz_buf_sz    = p8_test_get_buffer_size();
 
-    std::string lo_large(lz_buf_sz * 2, 'X');
+    // A single wire string is length-prefixed with a uint16 and mu_args_size is
+    // itself a uint16, so cap the payload so (prefix + body) stays representable.
+    // Whenever the buffer is smaller than this cap the string still spans >1
+    // buffer; when it is larger the record simply stays within one buffer.
+    const size_t lz_len = std::min(lz_buf_sz * 2, static_cast<size_t>(UINT16_MAX) - sizeof(uint16_t));
+    std::string  lo_large(lz_len, 'X');
 
     auto lo_ctx = run_send_in_thread(
         [&lo_large]()
@@ -991,7 +1021,7 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
 {
     size_t lz_buf_sz = p8_test_get_buffer_size();
 
-    std::string lo_large(lz_buf_sz * 2, 'C');
+    std::string lo_large(frag_string_len(lz_buf_sz), 'C');
 
     auto lo_ctx = run_send_in_thread(
         [&lo_large]()
@@ -1025,8 +1055,9 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
 TEST_F(c_log_content_test, fragment_many_buffers)
 {
     size_t lz_buf_sz = p8_test_get_buffer_size();
-    size_t lz_str_sz = lz_buf_sz * 7;
-    ASSERT_LE(lz_str_sz, static_cast<size_t>(UINT16_MAX));
+    // A single wire string is capped at UINT16_MAX, so it can only span as many
+    // buffers as that cap allows for the current buffer size.
+    size_t lz_str_sz = std::min(lz_buf_sz * 7, static_cast<size_t>(UINT16_MAX));
 
     std::string lo_huge;
     lo_huge.reserve(lz_str_sz);
@@ -1060,7 +1091,11 @@ TEST_F(c_log_content_test, fragment_many_buffers)
     EXPECT_EQ(lo_result.size(), lo_huge.size());
     EXPECT_EQ(lo_result, lo_huge);
 
-    EXPECT_GE(lo_parsed.mo_all_captured.size(), 7u);
+    // Each buffer holds less than a full buffer of payload (headers take space),
+    // so the body occupies at least this many buffers. Derived from the buffer
+    // size so the expectation tracks the compile-time geometry (7 at 8 KB).
+    const size_t lz_expected_bufs = std::max<size_t>(1, lz_str_sz / lz_buf_sz);
+    EXPECT_GE(lo_parsed.mo_all_captured.size(), lz_expected_bufs);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1289,7 +1324,7 @@ TEST_F(c_log_content_test, attr_string_fragments)
     p8_attr_id li_attr = p8_attr_register("big_attr_str", e_p8_attr_str);
     ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
 
-    std::string lo_big_val(lz_buf_sz * 2, 'V');
+    std::string lo_big_val(frag_string_len(lz_buf_sz), 'V');
 
     struct s_p8_attr_val lo_av = {};
     lo_av.m_id                 = li_attr;
@@ -1538,7 +1573,7 @@ TEST_F(c_log_content_test, item_size_8_byte_aligned)
 TEST_F(c_log_content_test, multi_send_with_fragmentation)
 {
     size_t      lz_buf_sz = p8_test_get_buffer_size();
-    std::string lo_large(lz_buf_sz * 2, 'X');
+    std::string lo_large(frag_string_len(lz_buf_sz), 'X');
 
     bool lb_r1 = false, lb_r2 = false, lb_r3 = false;
 

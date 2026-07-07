@@ -131,6 +131,29 @@ void cp8_buffer_pool::recycle(uint8_t *ip_buf)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_buffer_pool::recycle(kit::c_lst<uint8_t *> &io_bufs)
+{
+    if(0 == io_bufs.size())
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lo_guard(mo_mutex);
+
+    io_bufs.clear(
+        [this](uint8_t *ip_buf)
+        {
+            if(!ip_buf)
+            {
+                return;
+            }
+            mz_acquired -= mz_buffer_size;
+            mo_free.push_last(ip_buf);
+        },
+        kit::e_c_lst_pool_policy::e_keep);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 size_t cp8_buffer_pool::get_buffer_size() const
 {
     return mz_buffer_size;

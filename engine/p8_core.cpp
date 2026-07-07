@@ -314,6 +314,12 @@ bool cp8_core::init_buffer_pool(const char *ip_max_memory_size, const char *ip_i
         return false;
     }
 
+    if(mz_data_buffer_size > (2 << 16))
+    {
+        std::fprintf(stderr, "cp8_core::init_buffer_pool: buffer size > 64KB\n");
+        return false;
+    }
+
     mp_data_pool = new(std::nothrow) cp8_buffer_pool(mz_data_buffer_size, mp_memory_budget);
     if(!mp_data_pool)
     {
@@ -764,12 +770,16 @@ void cp8_core::release_buffers(kit::c_lst<uint8_t *> &io_buffers)
         return;
     }
 
-    if(0 == io_buffers.size())
+    const size_t lz_count = io_buffers.size();
+    if(0 == lz_count)
     {
         return;
     }
 
-    io_buffers.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+    // Single lock acquisition on the pool for the whole batch, then one atomic
+    // decrement of the outstanding counter — instead of paying both per buffer.
+    mp_data_pool->recycle(io_buffers);
+    mu_outstanding_buffers.fetch_sub(lz_count, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -900,8 +910,9 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
 
     mp_sink->write_data(io_ready);
 
-    // recycle the consumed data buffers back to the pool
-    io_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+    // recycle the consumed data buffers back to the pool in one batch (single
+    // pool-mutex acquisition for the whole flush)
+    release_buffers(io_ready);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1325,7 +1336,9 @@ uint32_t p8_test_get_instance_count()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 size_t p8_test_get_buffer_size()
 {
-    return gp_instance ? gp_instance->mz_data_buffer_size : 0;
+    // Compile-time pool geometry: return it directly so tests can size their
+    // configs as multiples of the buffer size before any instance exists.
+    return cp8_core::mz_data_buffer_size;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

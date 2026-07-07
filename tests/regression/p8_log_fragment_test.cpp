@@ -11,16 +11,27 @@
 #include <thread>
 #include <vector>
 
+namespace
+{
+// Build a memory config sized in whole buffers so the fixture stays correct
+// regardless of the compile-time buffer size.
+std::string make_mem_config(size_t iz_buffers)
+{
+    const size_t      lz_bytes = iz_buffers * p8_test_get_buffer_size();
+    const std::string ls       = std::to_string(lz_bytes);
+    return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
+           + "\": \"" + ls + "\"}";
+}
+} // namespace
+
 class c_log_fragment_test : public ::testing::Test
 {
 protected:
     void SetUp() override
     {
+        const std::string  ls_config = make_mem_config(/*buffers*/ 16);
         struct s_p8_config lo_config = {};
-        lo_config.mp_json_config     = "{"
-                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"128KB\","
-                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"128KB\""
-                                       "}";
+        lo_config.mp_json_config     = ls_config.c_str();
 
         ASSERT_TRUE(p8_initialize(&lo_config));
     }
@@ -169,11 +180,10 @@ TEST_F(c_log_fragment_test, discard_when_pool_exhausted)
 {
     p8_release();
 
+    // single-buffer pool: a record that needs a second buffer must be discarded
+    const std::string  ls_config = make_mem_config(/*buffers*/ 1);
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"8KB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"8KB\""
-                                   "}";
+    lo_config.mp_json_config     = ls_config.c_str();
     ASSERT_TRUE(p8_initialize(&lo_config));
     ASSERT_EQ(p8_test_get_free_buffers_count(), 1u);
 
