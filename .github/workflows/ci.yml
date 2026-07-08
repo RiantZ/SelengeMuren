@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            build_dir: _Build_lnx
+          - name: macos
+            os: macos-latest
+            build_dir: _Build_mac
+          - name: windows
+            os: windows-latest
+            build_dir: _Build_wnd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # The kit dependency is pulled by CMake FetchContent over SSH
+      # (git@github.com:RiantZ/kit.git). SSH has no keys in CI, so rewrite that
+      # URL to plain HTTPS. kit is public, so no token is needed.
+      - name: Rewrite SSH GitHub URLs to HTTPS
+        shell: bash
+        run: |
+          git config --global \
+            url."https://github.com/".insteadOf \
+            "git@github.com:"
+
+      - name: Configure & build
+        shell: bash
+        run: python scripts/cmake_build.py --build
+
+      - name: Test
+        shell: bash
+        run: ctest --test-dir ${{ matrix.build_dir }} -C Release --output-on-failure
+
+  format:
+    name: clang-format check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install clang-format 20
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y clang-format-20
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-20 100
+
+      # code_format.py lives in the kit repo. Clone it outside the p8 checkout
+      # (into RUNNER_TEMP) so its own sources are not picked up by the
+      # formatter's recursive scan of the project tree.
+      - name: Fetch formatter from kit
+        shell: bash
+        run: |
+          git clone --depth 1 \
+            "https://github.com/RiantZ/kit.git" \
+            "$RUNNER_TEMP/kit"
+
+      - name: Check formatting
+        shell: bash
+        run: python "$RUNNER_TEMP/kit/scripts/code_format.py" --check --all

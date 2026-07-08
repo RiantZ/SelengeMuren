@@ -1,4 +1,7 @@
 # Protocol8
+
+[![CI](https://github.com/RiantZ/p8/actions/workflows/ci.yml/badge.svg)](https://github.com/RiantZ/p8/actions/workflows/ci.yml)
+
 ## Building
 
 ### Prerequisites
