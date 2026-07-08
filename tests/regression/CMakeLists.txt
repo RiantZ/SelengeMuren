@@ -15,6 +15,20 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+# googletest is third-party; do not subject it to the project's strict
+# -Wall -Wextra -pedantic -Werror (or /W4 /WX) flags inherited via the global
+# CMAKE_CXX_FLAGS, or its own sources fail to compile (e.g. -Wcharacter-conversion
+# on newer Clang). Mirrors the Tracy handling in dep/CMakeLists.txt.
+foreach(gtest_target gtest gtest_main gmock gmock_main)
+    if(TARGET ${gtest_target})
+        if(MSVC)
+            target_compile_options(${gtest_target} PRIVATE /w)
+        else()
+            target_compile_options(${gtest_target} PRIVATE -w)
+        endif()
+    endif()
+endforeach()
+
 add_executable(${PROJECT_NAME}
     main.cpp
     p8_attr_test.cpp
