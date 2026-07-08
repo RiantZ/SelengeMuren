@@ -1728,3 +1728,102 @@ TEST_F(c_log_content_test, multi_send_with_attrs)
         EXPECT_EQ(lo_attr, "label_value");
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: verbosity gate in cp8_log::send()
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_log_content_test, verbosity_drops_below_module_threshold)
+{
+    p_p8_module lp_mod = P8_MODULE_INVALID_ID;
+    ASSERT_TRUE(p8_log_register_module("gate", e_p8_error0, &lp_mod));
+    ASSERT_NE(lp_mod, P8_MODULE_INVALID_ID);
+
+    // below the module threshold: rejected before any buffer is touched
+    auto lo_below = run_send_in_thread(
+        [lp_mod]()
+        {
+            return p8_log_sent(e_p8_trace0,
+                               lp_mod,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               1);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_FALSE(lo_below.mb_result);
+    EXPECT_TRUE(parse_captured_buffers().mo_all_captured.empty());
+
+    p8_test_clear_captured_buffers();
+
+    // at the module threshold: accepted and emitted
+    auto lo_at = run_send_in_thread(
+        [lp_mod]()
+        {
+            return p8_log_sent(e_p8_error0,
+                               lp_mod,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               2);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_TRUE(lo_at.mb_result);
+    EXPECT_FALSE(parse_captured_buffers().mo_all_captured.empty());
+}
+
+TEST_F(c_log_content_test, verbosity_default_gates_null_module)
+{
+    // a null module is gated by the whole-p8 default threshold
+    p8_log_set_verbosity(nullptr, e_p8_error0);
+
+    auto lo_below = run_send_in_thread(
+        []()
+        {
+            return p8_log_sent(e_p8_trace0,
+                               nullptr,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               1);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_FALSE(lo_below.mb_result);
+    EXPECT_TRUE(parse_captured_buffers().mo_all_captured.empty());
+
+    p8_test_clear_captured_buffers();
+
+    auto lo_at = run_send_in_thread(
+        []()
+        {
+            return p8_log_sent(e_p8_critical0,
+                               nullptr,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               2);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_TRUE(lo_at.mb_result);
+    EXPECT_FALSE(parse_captured_buffers().mo_all_captured.empty());
+}

@@ -248,6 +248,14 @@ cp8_core::~cp8_core()
     mo_attr_descs.clear();
     mo_attr_name_map.clear();
 
+    for(s_p8_log_mod *lp_mod : mo_log_mods)
+    {
+        std::free(const_cast<char *>(lp_mod->mp_name));
+        delete lp_mod;
+    }
+    mo_log_mods.clear();
+    mo_log_mod_map.clear();
+
     // drop references to any still-held service buffers; the pool destructor
     // frees the underlying memory below
     mo_svc_buffers.clear();
@@ -472,6 +480,7 @@ void cp8_core::worker_main()
         if(!lb_skip)
         {
             // move buffers from list protected by mutex to local one
+
             mo_svc_mutex.lock();
             while(mo_svc_buffers.size())
             {
@@ -713,6 +722,106 @@ void cp8_core::sync_attr_cache(std::vector<const s_p8_attr_desc *> &io_cache)
     {
         io_cache[lz_i] = mo_attr_descs[lz_i];
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool cp8_core::register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module)
+{
+    if(op_module)
+    {
+        *op_module = P8_MODULE_INVALID_ID;
+    }
+
+    if(!mb_initialized)
+    {
+        return false;
+    }
+
+    if(!ip_name || ip_name[0] == '\0' || !op_module)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lo_lock(mo_log_mod_mutex);
+
+    auto lo_it = mo_log_mod_map.find(ip_name);
+    if(lo_it != mo_log_mod_map.end())
+    {
+        // duplicate name: return the existing handle, refresh its verbosity
+        s_p8_log_mod *lp_existing = lo_it->second;
+        lp_existing->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+        *op_module = lp_existing;
+        return true;
+    }
+
+    s_p8_log_mod *lp_mod = new(std::nothrow) s_p8_log_mod;
+    if(!lp_mod)
+    {
+        return false;
+    }
+
+    lp_mod->mp_name = strdup(ip_name);
+    if(!lp_mod->mp_name)
+    {
+        delete lp_mod;
+        return false;
+    }
+
+    lp_mod->mu_id = static_cast<uint16_t>(mo_log_mods.size());
+    lp_mod->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+
+    mo_log_mods.push_back(lp_mod);
+    mo_log_mod_map[ip_name] = lp_mod;
+
+    *op_module              = lp_mod;
+    return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+p_p8_module cp8_core::find_module(const char *ip_name)
+{
+    if(!mb_initialized)
+    {
+        return P8_MODULE_INVALID_ID;
+    }
+
+    if(!ip_name || ip_name[0] == '\0')
+    {
+        return P8_MODULE_INVALID_ID;
+    }
+
+    std::lock_guard<std::mutex> lo_lock(mo_log_mod_mutex);
+
+    auto lo_it = mo_log_mod_map.find(ip_name);
+    if(lo_it != mo_log_mod_map.end())
+    {
+        return lo_it->second;
+    }
+
+    return P8_MODULE_INVALID_ID;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity)
+{
+    if(!ip_module)
+    {
+        me_default_verbosity.store(ie_verbosity, std::memory_order_relaxed);
+        return;
+    }
+
+    reinterpret_cast<s_p8_log_mod *>(ip_module)->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+enum e_p8_level cp8_core::get_verbosity(p_p8_module ip_module)
+{
+    if(!ip_module)
+    {
+        return me_default_verbosity.load(std::memory_order_relaxed);
+    }
+
+    return reinterpret_cast<const s_p8_log_mod *>(ip_module)->mb_vervosity.load(std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

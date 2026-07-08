@@ -32,10 +32,11 @@
 // the budget cap), acquire_buffer wakes the worker so it can pull accumulated
 // buffers from all writers. Measuring against allocated memory keeps an
 // infinite/default budget from reading as permanent pressure.
-#define P8_CORE_FREE_MEM_PERCENT       25
+#define P8_CORE_FREE_MEM_PERCENT       75
 
 class cp8_tls_writer;
 struct s_p8_log_desc;
+struct s_p8_log_mod;
 
 // Aggregated count of telemetry elements dropped before reaching the sink,
 // split by kind. Returned by cp8_core::get_dropped_stats() and by each writer's
@@ -90,6 +91,12 @@ public:
     p8_attr_id attr_register(const char *ip_name, enum e_p8_attr_type ie_type);
     p8_attr_id attr_get(const char *ip_name) const;
     void       sync_attr_cache(std::vector<const s_p8_attr_desc *> &io_cache);
+
+    // log modules
+    bool            register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module);
+    p_p8_module     find_module(const char *ip_name);
+    void            set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity);
+    enum e_p8_level get_verbosity(p_p8_module ip_module);
 
     // buffer pool
     static size_t get_buffer_size();
@@ -203,6 +210,14 @@ private:
     std::vector<s_p8_attr_desc *>               mo_attr_descs;
     std::unordered_map<std::string, p8_attr_id> mo_attr_name_map;
     mutable std::mutex                          mo_attr_mutex;
+
+    // module registry (global, mutex-protected). The handle handed to callers is
+    // a pointer to the owned s_p8_log_mod; me_default_verbosity backs the
+    // null-module (whole-p8) case of set/get_verbosity.
+    std::vector<s_p8_log_mod *>                     mo_log_mods;
+    std::unordered_map<std::string, s_p8_log_mod *> mo_log_mod_map;
+    std::mutex                                      mo_log_mod_mutex;
+    std::atomic<enum e_p8_level>                    me_default_verbosity { e_p8_trace0 };
 
     // serialized service data (log + attr descriptors), drained by the worker
     // thread. The last element is the current in-progress buffer; the earlier

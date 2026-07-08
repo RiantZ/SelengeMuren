@@ -105,9 +105,9 @@ static_assert(offsetof(struct s_p8_log_item_dat, mu_processor) == 29,
 static_assert(offsetof(struct s_p8_log_item_dat, mu_args_size) == 30,
               "s_p8_log_item_dat::mu_args_size offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_size) == 32, "s_p8_log_item_dat::mu_size offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_attrs_count) == 34,
+static_assert(offsetof(struct s_p8_log_item_dat, mu_attrs_count) == 36,
               "s_p8_log_item_dat::mu_attrs_count offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 35, "s_p8_log_item_dat::mu_flags offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 37, "s_p8_log_item_dat::mu_flags offset changed");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Attribute value type contract.  The public enum e_p8_attr_type (p8_client_api.h) is the source of truth the caller

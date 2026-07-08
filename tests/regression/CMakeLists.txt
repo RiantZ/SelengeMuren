@@ -26,6 +26,7 @@ add_executable(${PROJECT_NAME}
     p8_log_format_test.cpp
     p8_log_fragment_test.cpp
     p8_log_content_test.cpp
+    p8_log_module_test.cpp
     p8_log_perf_test.cpp
     p8_writer_registry_test.cpp
     p8_svc_serialize_test.cpp
