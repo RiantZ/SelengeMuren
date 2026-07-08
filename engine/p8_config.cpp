@@ -31,7 +31,12 @@ extern "C"
         }
 
 #ifdef G_OS_WINDOWS
-        lp_file = _wfopen(ip_path, L"rb");
+        // _wfopen is flagged unsafe (C4996) by MSVC; use the _s variant, which
+        // sets lp_file to NULL on failure so the shared check below still works.
+        if(_wfopen_s(&lp_file, ip_path, L"rb") != 0)
+        {
+            lp_file = nullptr;
+        }
 #else
         lp_file = std::fopen(ip_path, "rb");
 #endif
