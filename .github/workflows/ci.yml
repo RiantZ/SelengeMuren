@@ -21,10 +21,10 @@ jobs:
             os: ubuntu-24.04
             build_dir: _Build_lnx
           - name: macos
-            os: macos-latest
+            os: macos-14
             build_dir: _Build_mac
           - name: windows
-            os: windows-latest
+            os: windows-2022
             build_dir: _Build_wnd
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +34,10 @@ jobs:
           python-version: "3.x"
 
       # Runners ship CMake ~3.31; the kit dependency requires CMake >= 4.0.
-      - name: Install CMake
+      - name: Install CMake 4.x
         uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: "~4.0"
 
       # The kit dependency is pulled by CMake FetchContent over SSH
       # (git@github.com:RiantZ/kit.git). SSH has no keys in CI, so rewrite that
