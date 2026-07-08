@@ -345,8 +345,6 @@ size_t cp8_log::parse_format_string(struct s_p8_log_varg *op_args, size_t iz_arg
     return lz_count;
 }
 
-static thread_local cp8_log go_tls_log;
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_log::cp8_log()
     : cp8_tls_writer(&mo_lock)
@@ -753,9 +751,10 @@ extern "C"
                      const char                 *ip_format,
                      ...)
     {
-        va_list lo_args;
+        thread_local cp8_log lo_tls_log;
+        va_list              lo_args;
         va_start(lo_args, ip_format);
-        bool lb_result = go_tls_log.send(ie_level,
+        bool lb_result = lo_tls_log.send(ie_level,
                                          ip_module,
                                          iu_trace_id,
                                          iu_line,
@@ -781,7 +780,8 @@ extern "C"
                          const char                 *ip_format,
                          va_list                    *ip_va_list)
     {
-        return go_tls_log.send(ie_level,
+        thread_local cp8_log lo_tls_log;
+        return lo_tls_log.send(ie_level,
                                ip_module,
                                iu_trace_id,
                                iu_line,
