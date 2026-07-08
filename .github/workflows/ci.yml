@@ -33,6 +33,10 @@ jobs:
         with:
           python-version: "3.x"
 
+      # Runners ship CMake ~3.31; the kit dependency requires CMake >= 4.0.
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
       # The kit dependency is pulled by CMake FetchContent over SSH
       # (git@github.com:RiantZ/kit.git). SSH has no keys in CI, so rewrite that
       # URL to plain HTTPS. kit is public, so no token is needed.
