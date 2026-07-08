@@ -4,6 +4,10 @@ include(FetchContent)
 # GCC's -Wclass-memaccess from list.hpp's memset on non-trivial types when a
 # kit template is instantiated in a p8 translation unit) without weakening the
 # project's -Werror on p8's own code.
+# p8 only ever links the static kit archive (kit::kit). Skip building kit's
+# shared library so we don't waste build time on an unused DLL/.so (and, on
+# Windows, avoid its import lib colliding with the static kit.lib).
+set(KIT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     kit
     GIT_REPOSITORY git@github.com:RiantZ/kit.git

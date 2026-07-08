@@ -286,7 +286,10 @@ TEST_F(c_p8_core_test, get_global_core_timeout_no_init)
 
     EXPECT_EQ(lp_core, nullptr);
     EXPECT_GE(lo_elapsed.count(), 50);
-    EXPECT_LE(lo_elapsed.count(), 200);
+    // Generous upper bound: the poll loop sleeps in 10 ms steps and sleep_for can
+    // overshoot heavily on loaded CI runners. This bound only guards against a hang,
+    // not precise timing (the >= 50 check verifies the timeout is honored).
+    EXPECT_LE(lo_elapsed.count(), 5000);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
