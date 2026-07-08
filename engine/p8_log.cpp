@@ -679,7 +679,7 @@ lbl_discard:
     // the buffers this record added, leaving earlier complete records intact.
     lp_hdr->mu_args_size   = static_cast<uint16_t>(lz_args_written);
     lp_hdr->mu_attrs_count = lu_attrs_count;
-    lp_hdr->mu_size        = static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
+    lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
 
     while(mo_fragments.size() > lz_frag_commit)
     {

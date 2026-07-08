@@ -659,7 +659,7 @@ p8_attr_id cp8_core::attr_register(const char *ip_name, enum e_p8_attr_type ie_t
         return P8_ATTR_ERROR_ALLOC_FAILED;
     }
 
-    lp_desc->mp_name = strdup(ip_name);
+    lp_desc->mp_name = str_dup(ip_name);
     if(!lp_desc->mp_name)
     {
         delete lp_desc;
@@ -760,7 +760,7 @@ bool cp8_core::register_module(const char *ip_name, enum e_p8_level ie_verbosity
         return false;
     }
 
-    lp_mod->mp_name = strdup(ip_name);
+    lp_mod->mp_name = str_dup(ip_name);
     if(!lp_mod->mp_name)
     {
         delete lp_mod;
