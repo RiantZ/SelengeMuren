@@ -1,8 +1,14 @@
 include(FetchContent)
+# SYSTEM: consume kit as a third-party dependency so its headers are included
+# with -isystem. That suppresses warnings originating inside kit headers (e.g.
+# GCC's -Wclass-memaccess from list.hpp's memset on non-trivial types when a
+# kit template is instantiated in a p8 translation unit) without weakening the
+# project's -Werror on p8's own code.
 FetchContent_Declare(
     kit
     GIT_REPOSITORY git@github.com:RiantZ/kit.git
     GIT_TAG        main
+    SYSTEM
 )
 FetchContent_MakeAvailable(kit)
 
@@ -15,6 +21,7 @@ FetchContent_Declare(
     nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG        v3.12.0
+    SYSTEM
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
@@ -29,7 +36,7 @@ FetchContent_MakeAvailable(xxhash)
 
 add_library(xxhash_hdr INTERFACE)
 add_library(xxhash::xxhash ALIAS xxhash_hdr)
-target_include_directories(xxhash_hdr INTERFACE ${xxhash_SOURCE_DIR})
+target_include_directories(xxhash_hdr SYSTEM INTERFACE ${xxhash_SOURCE_DIR})
 
 # Tracy profiler -- optional, controlled by P8_ENABLE_TRACY (OFF by default).
 #
