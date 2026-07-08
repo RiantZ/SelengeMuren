@@ -6,7 +6,7 @@
 
 ### Prerequisites
 
-- CMake 3.20+ (tested up to 4.0)
+- CMake 4.0+
 - Python 3
 - C++20 compatible compiler (MSVC, GCC, Clang)
 
