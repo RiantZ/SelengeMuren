@@ -12,6 +12,7 @@
 #include "kit/system.hpp"
 #include "kit/thread.hpp"
 #include "kit/time.hpp"
+#include "kit/types.h"
 
 #include <nlohmann/json.hpp>
 
@@ -22,7 +23,6 @@
 #include <cstring>
 #include <exception>
 #include <limits>
-#include <strings.h>
 #include <chrono>
 #include <new>
 #include <string>
@@ -59,7 +59,7 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
     }
     la_buf[lz_dst] = '\0';
 
-    if(strcasecmp(la_buf, "infinite") == 0)
+    if(str_casecmp(la_buf, "infinite") == 0)
     {
         oz_result = std::numeric_limits<size_t>::max();
         return true;
@@ -79,13 +79,13 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
         return true;
     }
 
-    if(strcasecmp(lp_end, "KB") == 0 || strcasecmp(lp_end, "Ki") == 0)
+    if(str_casecmp(lp_end, "KB") == 0 || str_casecmp(lp_end, "Ki") == 0)
     {
         oz_result = static_cast<size_t>(lu_val * 1024);
         return true;
     }
 
-    if(strcasecmp(lp_end, "MB") == 0 || strcasecmp(lp_end, "Mi") == 0)
+    if(str_casecmp(lp_end, "MB") == 0 || str_casecmp(lp_end, "Mi") == 0)
     {
         oz_result = static_cast<size_t>(lu_val * 1024 * 1024);
         return true;
