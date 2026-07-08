@@ -773,7 +773,13 @@ bool cp8_core::register_module(const char *ip_name, enum e_p8_level ie_verbosity
     mo_log_mods.push_back(lp_mod);
     mo_log_mod_map[ip_name] = lp_mod;
 
-    *op_module              = lp_mod;
+    // transmit the module descriptor once so the receiver can resolve mu_mod_id
+    {
+        std::lock_guard<std::mutex> lo_svc_lock(mo_svc_mutex);
+        serialize_log_mod(lp_mod);
+    }
+
+    *op_module = lp_mod;
     return true;
 }
 
@@ -1181,6 +1187,42 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
     {
         memcpy(lp_var, ip_desc->ma_args, lz_args * sizeof(s_p8_log_varg));
     }
+    // trailing padding is already zeroed by svc_reserve
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::serialize_log_mod(const s_p8_log_mod *ip_mod)
+{
+    if(!ip_mod)
+    {
+        return;
+    }
+
+    // truncate over-long names to the service-string boundary (length modulo)
+    size_t lz_name   = ip_mod->mp_name ? strlen(ip_mod->mp_name) % P8_SVC_STR_MAX_LEN : 0;
+
+    // fixed header + NUL-terminated name, padded so the whole entry is 8-aligned
+    size_t lz_padded = P8_ALIGN_UP_8(sizeof(s_p8_log_mod_svc) + lz_name + 1);
+
+    uint8_t *lp_dst  = svc_reserve(lz_padded);
+    if(!lp_dst)
+    {
+        return;
+    }
+
+    s_p8_log_mod_svc *lp_entry      = reinterpret_cast<s_p8_log_mod_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_MODULE;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mu_id                 = ip_mod->mu_id;
+    lp_entry->mu_verb               = static_cast<uint8_t>(ip_mod->mb_vervosity.load(std::memory_order_relaxed));
+
+    uint8_t *lp_name                = lp_dst + sizeof(s_p8_log_mod_svc);
+    if(lz_name)
+    {
+        memcpy(lp_name, ip_mod->mp_name, lz_name);
+    }
+    lp_name[lz_name] = '\0';
     // trailing padding is already zeroed by svc_reserve
 }
 

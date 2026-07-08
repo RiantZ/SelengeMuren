@@ -166,12 +166,13 @@ private:
     // queue, and the only place data buffers are captured under P8_TESTING.
     void flush_ready(kit::c_lst<uint8_t *> &io_ready);
 
-    // service-data serialization (log + attr descriptors). All helpers below
-    // assume mo_svc_mutex is held by the caller.
+    // service-data serialization (log + attr + module descriptors). All helpers
+    // below assume mo_svc_mutex is held by the caller.
     s_p8_svc_buf *svc_acquire_new();
     uint8_t      *svc_reserve(size_t iz_padded);
     void          serialize_attr_desc(const s_p8_attr_desc *ip_desc);
     void          serialize_log_desc(const struct s_p8_log_desc *ip_desc);
+    void          serialize_log_mod(const s_p8_log_mod *ip_mod);
 
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };

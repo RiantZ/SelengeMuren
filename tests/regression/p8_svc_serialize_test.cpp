@@ -297,3 +297,65 @@ TEST_F(c_p8_svc_serialize_test, multiple_entries_are_each_8_byte_aligned)
         EXPECT_EQ(lr_entry.mo_bytes.size() % 8u, 0u);
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// module descriptor serialization
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_p8_svc_serialize_test, register_module_serializes_entry)
+{
+    p_p8_module lp_mod = P8_MODULE_INVALID_ID;
+    ASSERT_TRUE(p8_log_register_module("net", e_p8_warning0, &lp_mod));
+    ASSERT_NE(lp_mod, P8_MODULE_INVALID_ID);
+
+    auto lo_entries = collect_service_entries();
+
+    int li_found    = 0;
+    for(const auto &lr_entry : lo_entries)
+    {
+        if(lr_entry.mu_type != P8_SVC_TYPE_MODULE)
+        {
+            continue;
+        }
+
+        s_p8_log_mod_svc lo_mod = {};
+        ASSERT_GE(lr_entry.mo_bytes.size(), sizeof(s_p8_log_mod_svc));
+        memcpy(&lo_mod, lr_entry.mo_bytes.data(), sizeof(lo_mod));
+
+        if(read_cstr(lr_entry.mo_bytes, sizeof(s_p8_log_mod_svc)) != "net")
+        {
+            continue;
+        }
+
+        ++li_found;
+
+        EXPECT_EQ(lo_mod.ms_hdr.mu_size % 8u, 0u);
+        EXPECT_EQ(lo_mod.ms_hdr.mu_size, lr_entry.mo_bytes.size());
+        EXPECT_EQ(lo_mod.mu_verb, static_cast<uint8_t>(e_p8_warning0));
+    }
+
+    EXPECT_EQ(li_found, 1);
+}
+
+TEST_F(c_p8_svc_serialize_test, register_duplicate_module_serializes_once)
+{
+    p_p8_module lp_a = P8_MODULE_INVALID_ID;
+    p_p8_module lp_b = P8_MODULE_INVALID_ID;
+    ASSERT_TRUE(p8_log_register_module("dup_mod", e_p8_info0, &lp_a));
+    ASSERT_TRUE(p8_log_register_module("dup_mod", e_p8_error0, &lp_b));
+    EXPECT_EQ(lp_a, lp_b);
+
+    auto lo_entries = collect_service_entries();
+
+    int li_count    = 0;
+    for(const auto &lr_entry : lo_entries)
+    {
+        if(lr_entry.mu_type == P8_SVC_TYPE_MODULE
+           && read_cstr(lr_entry.mo_bytes, sizeof(s_p8_log_mod_svc)) == "dup_mod")
+        {
+            ++li_count;
+        }
+    }
+
+    EXPECT_EQ(li_count, 1);
+}
