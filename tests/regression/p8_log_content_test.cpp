@@ -126,20 +126,21 @@ static s_log_content_parsed parse_captured_buffers()
     return lo_result;
 }
 
-template <typename t_val> static t_val read_val(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
+template <typename t_val>
+static t_val read_val(const std::vector<uint8_t> &io_payload, size_t &ioz_offset, size_t iz_increment_bytes)
 {
     t_val lo_val = {};
     if(ioz_offset + sizeof(t_val) <= io_payload.size())
     {
         memcpy(&lo_val, io_payload.data() + ioz_offset, sizeof(t_val));
     }
-    ioz_offset += sizeof(t_val);
+    ioz_offset += iz_increment_bytes;
     return lo_val;
 }
 
 static std::string read_string(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
 {
-    uint16_t    lu_len = read_val<uint16_t>(io_payload, ioz_offset);
+    uint16_t    lu_len = read_val<uint16_t>(io_payload, ioz_offset, sizeof(uint16_t));
     std::string lo_str;
     if(lu_len > 0 && ioz_offset + lu_len <= io_payload.size())
     {
@@ -151,7 +152,7 @@ static std::string read_string(const std::vector<uint8_t> &io_payload, size_t &i
 
 static uint16_t read_string_len(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
 {
-    return read_val<uint16_t>(io_payload, ioz_offset);
+    return read_val<uint16_t>(io_payload, ioz_offset, sizeof(uint16_t));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -655,7 +656,7 @@ TEST_F(c_log_content_test, payload_int32)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_val  = read_val<uint32_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_val, 42u);
 }
 
@@ -686,7 +687,7 @@ TEST_F(c_log_content_test, payload_int64)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_val, static_cast<uint64_t>(li_expected));
 }
 
@@ -715,7 +716,7 @@ TEST_F(c_log_content_test, payload_double)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    double ld_val    = read_val<double>(lo_parsed.mo_args_payload, lz_off);
+    double ld_val    = read_val<double>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(double));
     EXPECT_EQ(memcmp(&ld_val, &ld_expected, sizeof(double)), 0);
 }
 
@@ -824,13 +825,13 @@ TEST_F(c_log_content_test, payload_multi_args)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_int1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_int1 = read_val<uint32_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_int1, 42u);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
     EXPECT_EQ(lo_str, "test");
 
-    uint64_t lu_int2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_int2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_int2, 99u);
 }
 
@@ -859,7 +860,7 @@ TEST_F(c_log_content_test, payload_pointer)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(void *));
     EXPECT_EQ(lu_val, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(lp_addr)));
 }
 
@@ -1045,7 +1046,7 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_int  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_int  = (uint32_t)read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_int, 777u);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1137,10 +1138,10 @@ TEST_F(c_log_content_test, attr_numeric_i64)
 
     size_t lz_off    = lz_args_end;
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
-    uint64_t lu_val = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     int64_t  li_val = 0;
     memcpy(&li_val, &lu_val, sizeof(int64_t));
     EXPECT_EQ(li_val, 12345LL);
@@ -1179,7 +1180,7 @@ TEST_F(c_log_content_test, attr_numeric_f64)
     lz_off               += sizeof(p8_attr_id);
 
     double   ld_expected  = 2.718;
-    uint64_t lu_raw       = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_raw       = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     double   ld_actual    = 0;
     memcpy(&ld_actual, &lu_raw, sizeof(double));
     EXPECT_EQ(memcmp(&ld_actual, &ld_expected, sizeof(double)), 0);
@@ -1216,7 +1217,7 @@ TEST_F(c_log_content_test, attr_string)
     size_t lz_off    = lo_parsed.mo_item_hdr.mu_args_size;
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_attrs_count, 1u);
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1263,17 +1264,17 @@ TEST_F(c_log_content_test, attr_count_multiple)
 
     size_t lz_off     = lo_parsed.mo_item_hdr.mu_args_size;
 
-    p8_attr_id li_id1 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id1 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id1, li_a1);
-    uint64_t lu_v1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_v1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(static_cast<int64_t>(lu_v1), 100);
 
-    p8_attr_id li_id2 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id2 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id2, li_a2);
-    uint64_t lu_v2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_v2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_v2, 200u);
 
-    p8_attr_id li_id3 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id3 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id3, li_a3);
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
     EXPECT_EQ(lo_str, "attr3");
@@ -1352,7 +1353,7 @@ TEST_F(c_log_content_test, attr_string_fragments)
     size_t lz_off    = lo_parsed.mo_item_hdr.mu_args_size;
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_attrs_count, 1u);
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
     std::string lo_result = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1488,7 +1489,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
               expected_item_size(sizeof(s_p8_log_item_dat) + lo_items[0].mo_hdr.mu_args_size));
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 100u);
     }
 
@@ -1510,10 +1511,10 @@ TEST_F(c_log_content_test, multi_send_three_items)
     EXPECT_EQ(lo_items[2].mo_hdr.mu_attrs_count, 0u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[2].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 42u);
 
-        double ld_val      = read_val<double>(lo_items[2].mo_payload, lz_off);
+        double ld_val      = read_val<double>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(double));
         double ld_expected = 3.14;
         EXPECT_EQ(memcmp(&ld_val, &ld_expected, sizeof(double)), 0);
     }
@@ -1624,7 +1625,7 @@ TEST_F(c_log_content_test, multi_send_with_fragmentation)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_trace_id, 10u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 1u);
     }
 
@@ -1641,7 +1642,7 @@ TEST_F(c_log_content_test, multi_send_with_fragmentation)
     EXPECT_EQ(lo_items[2].mo_hdr.mu_trace_id, 30u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[2].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 3u);
     }
 
@@ -1703,13 +1704,13 @@ TEST_F(c_log_content_test, multi_send_with_attrs)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_attrs_count, 1u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 42u);
 
         lz_off           = lo_items[0].mo_hdr.mu_args_size;
-        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[0].mo_payload, lz_off);
+        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[0].mo_payload, lz_off, sizeof(p8_attr_id));
         EXPECT_EQ(li_id, li_attr_int);
-        uint64_t lu_attr = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint64_t lu_attr = read_val<uint64_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
         EXPECT_EQ(static_cast<int64_t>(lu_attr), 777);
     }
 
@@ -1722,7 +1723,7 @@ TEST_F(c_log_content_test, multi_send_with_attrs)
         EXPECT_EQ(lo_str, "test");
 
         lz_off           = lo_items[1].mo_hdr.mu_args_size;
-        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[1].mo_payload, lz_off);
+        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[1].mo_payload, lz_off, sizeof(p8_attr_id));
         EXPECT_EQ(li_id, li_attr_str);
         std::string lo_attr = read_string(lo_items[1].mo_payload, lz_off);
         EXPECT_EQ(lo_attr, "label_value");
