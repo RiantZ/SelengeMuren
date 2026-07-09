@@ -12,6 +12,19 @@
 #include <thread>
 #include <vector>
 
+namespace
+{
+// Build a memory config sized in whole buffers so the tests stay correct
+// regardless of the compile-time buffer size.
+std::string make_mem_config(size_t iz_buffers)
+{
+    const size_t      lz_bytes = iz_buffers * p8_test_get_buffer_size();
+    const std::string ls       = std::to_string(lz_bytes);
+    return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
+           + "\": \"" + ls + "\"}";
+}
+} // namespace
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Tests for the pull-based drain architecture: writers retain filled buffers
 // locally and the core pulls them via cp8_core::drain_writers (exercised here
@@ -140,21 +153,21 @@ TEST_F(c_pull_test, drain_pulls_from_multiple_live_writers)
 
 TEST_F(c_pull_test, discard_preserves_earlier_records)
 {
-    // 4-buffer pool: two records fill+park two buffers, the third record
-    // exhausts the remaining pool mid-serialization and must be discarded.
-    init_core("{"
-              "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"32KB\","
-              "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"32KB\""
-              "}");
+    // 3-buffer pool: two records fill+park two buffers, the third record
+    // exhausts the single remaining buffer mid-serialization and must be
+    // discarded. A single wire string is capped at UINT16_MAX, so a record can
+    // span at most ~2 buffers when the buffer is large; a 3-buffer pool keeps
+    // the exhaustion reachable for any compile-time buffer size.
+    const std::string ls_config = make_mem_config(/*buffers*/ 3);
+    init_core(ls_config.c_str());
     p8_test_enable_buffer_capture();
-    ASSERT_EQ(p8_test_get_free_buffers_count(), 4u);
+    ASSERT_EQ(p8_test_get_free_buffers_count(), 3u);
 
-    bool     lb_r3      = true;
-    uint64_t lu_dropped = 0;
-    size_t   lz_capture = 0;
+    bool   lb_r3      = true;
+    size_t lz_capture = 0;
 
     std::thread lo_thread(
-        [&lb_r3, &lu_dropped, &lz_capture]()
+        [&lb_r3, &lz_capture]()
         {
             const size_t lz_buf_sz   = p8_test_get_buffer_size();
             // size the string so the record all but fills its buffer, leaving
@@ -189,18 +202,16 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
 
             // R3 -> huge, exhausts the remaining pool and is discarded
             std::string lo_huge(lz_buf_sz * 3, 'Z');
-            lb_r3      = p8_log_sent(e_p8_trace0,
-                                     nullptr,
-                                     0,
-                                     static_cast<uint32_t>(__LINE__),
-                                     __FILE__,
-                                     __FUNCTION__,
-                                     0,
-                                     nullptr,
-                                     "%s",
-                                     lo_huge.c_str());
-
-            lu_dropped = p8_test_get_tls_dropped_records();
+            lb_r3 = p8_log_sent(e_p8_trace0,
+                                nullptr,
+                                0,
+                                static_cast<uint32_t>(__LINE__),
+                                __FILE__,
+                                __FUNCTION__,
+                                0,
+                                nullptr,
+                                "%s",
+                                lo_huge.c_str());
 
             // pull the survivors from this still-live writer
             p8_test_drain_writers();
@@ -209,7 +220,9 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
     lo_thread.join();
 
     EXPECT_FALSE(lb_r3);
-    EXPECT_EQ(lu_dropped, 1u);
+    // the discarded record is now visible through the core loss statistics,
+    // flushed there when the producer thread's writer was destroyed on join
+    EXPECT_EQ(p8_test_get_dropped_stats().mu_logs, 1u);
     // the two earlier complete records (buffers A and B) were not rolled back
     EXPECT_GE(lz_capture, 2u);
 }

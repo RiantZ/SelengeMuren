@@ -12,6 +12,7 @@
 #include "kit/system.hpp"
 #include "kit/thread.hpp"
 #include "kit/time.hpp"
+#include "kit/types.h"
 
 #include <nlohmann/json.hpp>
 
@@ -22,7 +23,6 @@
 #include <cstring>
 #include <exception>
 #include <limits>
-#include <strings.h>
 #include <chrono>
 #include <new>
 #include <string>
@@ -59,7 +59,7 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
     }
     la_buf[lz_dst] = '\0';
 
-    if(strcasecmp(la_buf, "infinite") == 0)
+    if(str_casecmp(la_buf, "infinite") == 0)
     {
         oz_result = std::numeric_limits<size_t>::max();
         return true;
@@ -79,13 +79,13 @@ static bool parse_size(const char *ip_str, size_t &oz_result)
         return true;
     }
 
-    if(strcasecmp(lp_end, "KB") == 0 || strcasecmp(lp_end, "Ki") == 0)
+    if(str_casecmp(lp_end, "KB") == 0 || str_casecmp(lp_end, "Ki") == 0)
     {
         oz_result = static_cast<size_t>(lu_val * 1024);
         return true;
     }
 
-    if(strcasecmp(lp_end, "MB") == 0 || strcasecmp(lp_end, "Mi") == 0)
+    if(str_casecmp(lp_end, "MB") == 0 || str_casecmp(lp_end, "Mi") == 0)
     {
         oz_result = static_cast<size_t>(lu_val * 1024 * 1024);
         return true;
@@ -248,6 +248,14 @@ cp8_core::~cp8_core()
     mo_attr_descs.clear();
     mo_attr_name_map.clear();
 
+    for(s_p8_log_mod *lp_mod : mo_log_mods)
+    {
+        std::free(const_cast<char *>(lp_mod->mp_name));
+        delete lp_mod;
+    }
+    mo_log_mods.clear();
+    mo_log_mod_map.clear();
+
     // drop references to any still-held service buffers; the pool destructor
     // frees the underlying memory below
     mo_svc_buffers.clear();
@@ -311,6 +319,12 @@ bool cp8_core::init_buffer_pool(const char *ip_max_memory_size, const char *ip_i
     catch(const std::bad_alloc &)
     {
         std::fprintf(stderr, "cp8_core::init_buffer_pool: budget allocation failed\n");
+        return false;
+    }
+
+    if(mz_data_buffer_size > (2 << 16))
+    {
+        std::fprintf(stderr, "cp8_core::init_buffer_pool: buffer size > 64KB\n");
         return false;
     }
 
@@ -438,6 +452,18 @@ void cp8_core::worker_main()
     // best-effort: raising priority typically needs elevated privileges, failure is non-fatal
     kit::set_thread_priority(kit::e_tp_time_critical);
 
+    // Stats-poll cadence: the loop wakes irregularly (event or timeout), so gate
+    // the drop-counter poll on a monotonic clock rather than an iteration count.
+    // Precompute the interval in ticks once so the per-iteration test is just a
+    // subtract-and-compare.
+    uint64_t lu_stats_numer = 0;
+    uint64_t lu_stats_denom = 0;
+    kit::get_hires_ticks_freq(lu_stats_numer, lu_stats_denom);
+    const uint64_t lu_stats_poll_ticks = lu_stats_numer ? static_cast<uint64_t>(P8_CORE_STATS_POLL_INTERVAL_MS)
+                                                              * 1000000ULL * lu_stats_denom / lu_stats_numer
+                                                        : 0;
+    uint64_t       lu_stats_last_ticks = kit::get_hires_ticks();
+
     for(;;)
     {
         uint32_t lu_signal = mo_worker_event.wait(P8_CORE_THREAD_TIMEOUT_MS);
@@ -454,6 +480,7 @@ void cp8_core::worker_main()
         if(!lb_skip)
         {
             // move buffers from list protected by mutex to local one
+
             mo_svc_mutex.lock();
             while(mo_svc_buffers.size())
             {
@@ -482,6 +509,18 @@ void cp8_core::worker_main()
 
             // pull accumulated buffers from every live writer into the same batch
             drain_writers(lo_ready);
+
+            // On the stats cadence, pull-and-reset every writer's drop counters
+            // into the core accumulators.
+            if(lu_stats_poll_ticks)
+            {
+                uint64_t lu_now_ticks = kit::get_hires_ticks();
+                if((lu_now_ticks - lu_stats_last_ticks) >= lu_stats_poll_ticks)
+                {
+                    poll_dropped_stats();
+                    lu_stats_last_ticks = lu_now_ticks;
+                }
+            }
 
             // Clear the pressure-wake debounce before draining. Every drain (wake,
             // submit, or timeout) pulls from all writers and relieves pressure, so
@@ -620,7 +659,7 @@ p8_attr_id cp8_core::attr_register(const char *ip_name, enum e_p8_attr_type ie_t
         return P8_ATTR_ERROR_ALLOC_FAILED;
     }
 
-    lp_desc->mp_name = strdup(ip_name);
+    lp_desc->mp_name = str_dup(ip_name);
     if(!lp_desc->mp_name)
     {
         delete lp_desc;
@@ -686,6 +725,112 @@ void cp8_core::sync_attr_cache(std::vector<const s_p8_attr_desc *> &io_cache)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool cp8_core::register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module)
+{
+    if(op_module)
+    {
+        *op_module = P8_MODULE_INVALID_ID;
+    }
+
+    if(!mb_initialized)
+    {
+        return false;
+    }
+
+    if(!ip_name || ip_name[0] == '\0' || !op_module)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lo_lock(mo_log_mod_mutex);
+
+    auto lo_it = mo_log_mod_map.find(ip_name);
+    if(lo_it != mo_log_mod_map.end())
+    {
+        // duplicate name: return the existing handle, refresh its verbosity
+        s_p8_log_mod *lp_existing = lo_it->second;
+        lp_existing->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+        *op_module = lp_existing;
+        return true;
+    }
+
+    s_p8_log_mod *lp_mod = new(std::nothrow) s_p8_log_mod;
+    if(!lp_mod)
+    {
+        return false;
+    }
+
+    lp_mod->mp_name = str_dup(ip_name);
+    if(!lp_mod->mp_name)
+    {
+        delete lp_mod;
+        return false;
+    }
+
+    lp_mod->mu_id = static_cast<uint16_t>(mo_log_mods.size());
+    lp_mod->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+
+    mo_log_mods.push_back(lp_mod);
+    mo_log_mod_map[ip_name] = lp_mod;
+
+    // transmit the module descriptor once so the receiver can resolve mu_mod_id
+    {
+        std::lock_guard<std::mutex> lo_svc_lock(mo_svc_mutex);
+        serialize_log_mod(lp_mod);
+    }
+
+    *op_module = lp_mod;
+    return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+p_p8_module cp8_core::find_module(const char *ip_name)
+{
+    if(!mb_initialized)
+    {
+        return P8_MODULE_INVALID_ID;
+    }
+
+    if(!ip_name || ip_name[0] == '\0')
+    {
+        return P8_MODULE_INVALID_ID;
+    }
+
+    std::lock_guard<std::mutex> lo_lock(mo_log_mod_mutex);
+
+    auto lo_it = mo_log_mod_map.find(ip_name);
+    if(lo_it != mo_log_mod_map.end())
+    {
+        return lo_it->second;
+    }
+
+    return P8_MODULE_INVALID_ID;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity)
+{
+    if(!ip_module)
+    {
+        me_default_verbosity.store(ie_verbosity, std::memory_order_relaxed);
+        return;
+    }
+
+    reinterpret_cast<s_p8_log_mod *>(ip_module)->mb_vervosity.store(ie_verbosity, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+enum e_p8_level cp8_core::get_verbosity(p_p8_module ip_module)
+{
+    if(!ip_module)
+    {
+        return me_default_verbosity.load(std::memory_order_relaxed);
+    }
+
+    return reinterpret_cast<const s_p8_log_mod *>(ip_module)->mb_vervosity.load(std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 uint8_t *cp8_core::acquire_buffer()
 {
     if(!mb_initialized)
@@ -740,12 +885,16 @@ void cp8_core::release_buffers(kit::c_lst<uint8_t *> &io_buffers)
         return;
     }
 
-    if(0 == io_buffers.size())
+    const size_t lz_count = io_buffers.size();
+    if(0 == lz_count)
     {
         return;
     }
 
-    io_buffers.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+    // Single lock acquisition on the pool for the whole batch, then one atomic
+    // decrement of the outstanding counter — instead of paying both per buffer.
+    mp_data_pool->recycle(io_buffers);
+    mu_outstanding_buffers.fetch_sub(lz_count, std::memory_order_relaxed);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -811,6 +960,43 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::poll_dropped_stats()
+{
+    s_p8_drop_stats lo_sum { 0, 0, 0 };
+
+    {
+        std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
+        for(cp8_tls_writer *lp_writer = mp_writers_head; lp_writer; lp_writer = lp_writer->mp_next_writer)
+        {
+            s_p8_drop_stats lo_writer  = lp_writer->pull_dropped();
+            lo_sum.mu_logs            += lo_writer.mu_logs;
+            lo_sum.mu_metrics         += lo_writer.mu_metrics;
+            lo_sum.mu_traces          += lo_writer.mu_traces;
+        }
+    }
+
+    accumulate_dropped(lo_sum);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::accumulate_dropped(const s_p8_drop_stats &ir_stats)
+{
+    mu_dropped_logs.fetch_add(ir_stats.mu_logs, std::memory_order_relaxed);
+    mu_dropped_metrics.fetch_add(ir_stats.mu_metrics, std::memory_order_relaxed);
+    mu_dropped_traces.fetch_add(ir_stats.mu_traces, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_drop_stats cp8_core::get_dropped_stats() const
+{
+    s_p8_drop_stats lo_stats;
+    lo_stats.mu_logs    = mu_dropped_logs.load(std::memory_order_relaxed);
+    lo_stats.mu_metrics = mu_dropped_metrics.load(std::memory_order_relaxed);
+    lo_stats.mu_traces  = mu_dropped_traces.load(std::memory_order_relaxed);
+    return lo_stats;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
 {
     // Counts every invocation (including the early-out below) plus its timing.
@@ -839,8 +1025,9 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
 
     mp_sink->write_data(io_ready);
 
-    // recycle the consumed data buffers back to the pool
-    io_ready.clear([this](uint8_t *ip_buf) { release_buffer(ip_buf); }, kit::e_c_lst_pool_policy::e_keep);
+    // recycle the consumed data buffers back to the pool in one batch (single
+    // pool-mutex acquisition for the whole flush)
+    release_buffers(io_ready);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1000,6 +1187,42 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
     {
         memcpy(lp_var, ip_desc->ma_args, lz_args * sizeof(s_p8_log_varg));
     }
+    // trailing padding is already zeroed by svc_reserve
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::serialize_log_mod(const s_p8_log_mod *ip_mod)
+{
+    if(!ip_mod)
+    {
+        return;
+    }
+
+    // truncate over-long names to the service-string boundary (length modulo)
+    size_t lz_name   = ip_mod->mp_name ? strlen(ip_mod->mp_name) % P8_SVC_STR_MAX_LEN : 0;
+
+    // fixed header + NUL-terminated name, padded so the whole entry is 8-aligned
+    size_t lz_padded = P8_ALIGN_UP_8(sizeof(s_p8_log_mod_svc) + lz_name + 1);
+
+    uint8_t *lp_dst  = svc_reserve(lz_padded);
+    if(!lp_dst)
+    {
+        return;
+    }
+
+    s_p8_log_mod_svc *lp_entry      = reinterpret_cast<s_p8_log_mod_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_MODULE;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mu_id                 = ip_mod->mu_id;
+    lp_entry->mu_verb               = static_cast<uint8_t>(ip_mod->mb_vervosity.load(std::memory_order_relaxed));
+
+    uint8_t *lp_name                = lp_dst + sizeof(s_p8_log_mod_svc);
+    if(lz_name)
+    {
+        memcpy(lp_name, ip_mod->mp_name, lz_name);
+    }
+    lp_name[lz_name] = '\0';
     // trailing padding is already zeroed by svc_reserve
 }
 
@@ -1264,7 +1487,9 @@ uint32_t p8_test_get_instance_count()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 size_t p8_test_get_buffer_size()
 {
-    return gp_instance ? gp_instance->mz_data_buffer_size : 0;
+    // Compile-time pool geometry: return it directly so tests can size their
+    // configs as multiples of the buffer size before any instance exists.
+    return cp8_core::mz_data_buffer_size;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1364,6 +1589,12 @@ size_t p8_test_get_writer_count()
 cp8_tls_writer *p8_test_get_writers_head()
 {
     return gp_instance ? gp_instance->get_writers_head() : nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_drop_stats p8_test_get_dropped_stats()
+{
+    return gp_instance ? gp_instance->get_dropped_stats() : s_p8_drop_stats { 0, 0, 0 };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

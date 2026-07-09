@@ -6,11 +6,37 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace
+{
+// Build a memory config sized in whole buffers so the fixture stays correct
+// regardless of the compile-time buffer size.
+std::string make_mem_config(size_t iz_buffers)
+{
+    const size_t      lz_bytes = iz_buffers * p8_test_get_buffer_size();
+    const std::string ls       = std::to_string(lz_bytes);
+    return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
+           + "\": \"" + ls + "\"}";
+}
+
+// Largest single-string payload that still spans more than one buffer (when the
+// buffer is smaller than the wire cap) while keeping the whole log item within
+// the uint16 mu_size field (item header + length prefix + body + padding must
+// stay <= UINT16_MAX). The 1 KB headroom covers the item header, extra fixed
+// args, and any attribute prefix across the fragmentation tests. Keeps them
+// exercising real multi-buffer splits regardless of the compile-time buffer
+// size (a 32 KB buffer still fragments a ~64 KB body across buffers).
+size_t frag_string_len(size_t iz_buf_sz)
+{
+    return std::min(iz_buf_sz * 2, static_cast<size_t>(UINT16_MAX) - 1024);
+}
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // helpers: reassemble captured buffers into a linear payload
@@ -100,20 +126,21 @@ static s_log_content_parsed parse_captured_buffers()
     return lo_result;
 }
 
-template <typename t_val> static t_val read_val(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
+template <typename t_val>
+static t_val read_val(const std::vector<uint8_t> &io_payload, size_t &ioz_offset, size_t iz_increment_bytes)
 {
     t_val lo_val = {};
     if(ioz_offset + sizeof(t_val) <= io_payload.size())
     {
         memcpy(&lo_val, io_payload.data() + ioz_offset, sizeof(t_val));
     }
-    ioz_offset += sizeof(t_val);
+    ioz_offset += iz_increment_bytes;
     return lo_val;
 }
 
 static std::string read_string(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
 {
-    uint16_t    lu_len = read_val<uint16_t>(io_payload, ioz_offset);
+    uint16_t    lu_len = read_val<uint16_t>(io_payload, ioz_offset, sizeof(uint16_t));
     std::string lo_str;
     if(lu_len > 0 && ioz_offset + lu_len <= io_payload.size())
     {
@@ -125,7 +152,7 @@ static std::string read_string(const std::vector<uint8_t> &io_payload, size_t &i
 
 static uint16_t read_string_len(const std::vector<uint8_t> &io_payload, size_t &ioz_offset)
 {
-    return read_val<uint16_t>(io_payload, ioz_offset);
+    return read_val<uint16_t>(io_payload, ioz_offset, sizeof(uint16_t));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -242,11 +269,9 @@ class c_log_content_test : public ::testing::Test
 protected:
     void SetUp() override
     {
+        const std::string  ls_config = make_mem_config(/*buffers*/ 16);
         struct s_p8_config lo_config = {};
-        lo_config.mp_json_config     = "{"
-                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"128KB\","
-                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"128KB\""
-                                       "}";
+        lo_config.mp_json_config     = ls_config.c_str();
         ASSERT_TRUE(p8_initialize(&lo_config));
         p8_test_enable_buffer_capture();
     }
@@ -631,7 +656,7 @@ TEST_F(c_log_content_test, payload_int32)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_val  = read_val<uint32_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_val, 42u);
 }
 
@@ -662,7 +687,7 @@ TEST_F(c_log_content_test, payload_int64)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_val, static_cast<uint64_t>(li_expected));
 }
 
@@ -691,7 +716,7 @@ TEST_F(c_log_content_test, payload_double)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    double ld_val    = read_val<double>(lo_parsed.mo_args_payload, lz_off);
+    double ld_val    = read_val<double>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(double));
     EXPECT_EQ(memcmp(&ld_val, &ld_expected, sizeof(double)), 0);
 }
 
@@ -800,13 +825,13 @@ TEST_F(c_log_content_test, payload_multi_args)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_int1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_int1 = read_val<uint32_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_int1, 42u);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
     EXPECT_EQ(lo_str, "test");
 
-    uint64_t lu_int2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_int2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_int2, 99u);
 }
 
@@ -835,7 +860,7 @@ TEST_F(c_log_content_test, payload_pointer)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(void *));
     EXPECT_EQ(lu_val, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(lp_addr)));
 }
 
@@ -886,11 +911,12 @@ TEST_F(c_log_content_test, fragment_flag_on_continuation)
 
 TEST_F(c_log_content_test, fragment_string_content)
 {
-    size_t lz_buf_sz = p8_test_get_buffer_size();
+    size_t lz_buf_sz    = p8_test_get_buffer_size();
 
-    std::string lo_pattern;
-    lo_pattern.reserve(lz_buf_sz * 2);
-    for(size_t lz_i = 0; lz_i < lz_buf_sz * 2; ++lz_i)
+    const size_t lz_len = frag_string_len(lz_buf_sz);
+    std::string  lo_pattern;
+    lo_pattern.reserve(lz_len);
+    for(size_t lz_i = 0; lz_i < lz_len; ++lz_i)
     {
         lo_pattern.push_back(static_cast<char>('A' + (lz_i % 26)));
     }
@@ -923,9 +949,14 @@ TEST_F(c_log_content_test, fragment_string_content)
 
 TEST_F(c_log_content_test, fragment_args_size_spans_buffers)
 {
-    size_t lz_buf_sz = p8_test_get_buffer_size();
+    size_t lz_buf_sz    = p8_test_get_buffer_size();
 
-    std::string lo_large(lz_buf_sz * 2, 'X');
+    // A single wire string is length-prefixed with a uint16 and mu_args_size is
+    // itself a uint16, so cap the payload so (prefix + body) stays representable.
+    // Whenever the buffer is smaller than this cap the string still spans >1
+    // buffer; when it is larger the record simply stays within one buffer.
+    const size_t lz_len = std::min(lz_buf_sz * 2, static_cast<size_t>(UINT16_MAX) - sizeof(uint16_t));
+    std::string  lo_large(lz_len, 'X');
 
     auto lo_ctx = run_send_in_thread(
         [&lo_large]()
@@ -991,7 +1022,7 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
 {
     size_t lz_buf_sz = p8_test_get_buffer_size();
 
-    std::string lo_large(lz_buf_sz * 2, 'C');
+    std::string lo_large(frag_string_len(lz_buf_sz), 'C');
 
     auto lo_ctx = run_send_in_thread(
         [&lo_large]()
@@ -1015,7 +1046,7 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
     auto   lo_parsed = parse_captured_buffers();
     size_t lz_off    = 0;
 
-    uint64_t lu_int  = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint32_t lu_int  = (uint32_t)read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
     EXPECT_EQ(lu_int, 777u);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1025,8 +1056,9 @@ TEST_F(c_log_content_test, fragment_fixed_then_string)
 TEST_F(c_log_content_test, fragment_many_buffers)
 {
     size_t lz_buf_sz = p8_test_get_buffer_size();
-    size_t lz_str_sz = lz_buf_sz * 7;
-    ASSERT_LE(lz_str_sz, static_cast<size_t>(UINT16_MAX));
+    // A single wire string is capped at UINT16_MAX, so it can only span as many
+    // buffers as that cap allows for the current buffer size.
+    size_t lz_str_sz = std::min(lz_buf_sz * 7, static_cast<size_t>(UINT16_MAX));
 
     std::string lo_huge;
     lo_huge.reserve(lz_str_sz);
@@ -1060,7 +1092,11 @@ TEST_F(c_log_content_test, fragment_many_buffers)
     EXPECT_EQ(lo_result.size(), lo_huge.size());
     EXPECT_EQ(lo_result, lo_huge);
 
-    EXPECT_GE(lo_parsed.mo_all_captured.size(), 7u);
+    // Each buffer holds less than a full buffer of payload (headers take space),
+    // so the body occupies at least this many buffers. Derived from the buffer
+    // size so the expectation tracks the compile-time geometry (7 at 8 KB).
+    const size_t lz_expected_bufs = std::max<size_t>(1, lz_str_sz / lz_buf_sz);
+    EXPECT_GE(lo_parsed.mo_all_captured.size(), lz_expected_bufs);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1102,10 +1138,10 @@ TEST_F(c_log_content_test, attr_numeric_i64)
 
     size_t lz_off    = lz_args_end;
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
-    uint64_t lu_val = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_val = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     int64_t  li_val = 0;
     memcpy(&li_val, &lu_val, sizeof(int64_t));
     EXPECT_EQ(li_val, 12345LL);
@@ -1144,7 +1180,7 @@ TEST_F(c_log_content_test, attr_numeric_f64)
     lz_off               += sizeof(p8_attr_id);
 
     double   ld_expected  = 2.718;
-    uint64_t lu_raw       = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_raw       = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     double   ld_actual    = 0;
     memcpy(&ld_actual, &lu_raw, sizeof(double));
     EXPECT_EQ(memcmp(&ld_actual, &ld_expected, sizeof(double)), 0);
@@ -1181,7 +1217,7 @@ TEST_F(c_log_content_test, attr_string)
     size_t lz_off    = lo_parsed.mo_item_hdr.mu_args_size;
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_attrs_count, 1u);
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1228,17 +1264,17 @@ TEST_F(c_log_content_test, attr_count_multiple)
 
     size_t lz_off     = lo_parsed.mo_item_hdr.mu_args_size;
 
-    p8_attr_id li_id1 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id1 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id1, li_a1);
-    uint64_t lu_v1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_v1 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(static_cast<int64_t>(lu_v1), 100);
 
-    p8_attr_id li_id2 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id2 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id2, li_a2);
-    uint64_t lu_v2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off);
+    uint64_t lu_v2 = read_val<uint64_t>(lo_parsed.mo_args_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
     EXPECT_EQ(lu_v2, 200u);
 
-    p8_attr_id li_id3 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id3 = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id3, li_a3);
     std::string lo_str = read_string(lo_parsed.mo_args_payload, lz_off);
     EXPECT_EQ(lo_str, "attr3");
@@ -1289,7 +1325,7 @@ TEST_F(c_log_content_test, attr_string_fragments)
     p8_attr_id li_attr = p8_attr_register("big_attr_str", e_p8_attr_str);
     ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
 
-    std::string lo_big_val(lz_buf_sz * 2, 'V');
+    std::string lo_big_val(frag_string_len(lz_buf_sz), 'V');
 
     struct s_p8_attr_val lo_av = {};
     lo_av.m_id                 = li_attr;
@@ -1317,7 +1353,7 @@ TEST_F(c_log_content_test, attr_string_fragments)
     size_t lz_off    = lo_parsed.mo_item_hdr.mu_args_size;
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_attrs_count, 1u);
 
-    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off);
+    p8_attr_id li_id = read_val<p8_attr_id>(lo_parsed.mo_args_payload, lz_off, sizeof(p8_attr_id));
     EXPECT_EQ(li_id, li_attr);
 
     std::string lo_result = read_string(lo_parsed.mo_args_payload, lz_off);
@@ -1453,7 +1489,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
               expected_item_size(sizeof(s_p8_log_item_dat) + lo_items[0].mo_hdr.mu_args_size));
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 100u);
     }
 
@@ -1475,10 +1511,10 @@ TEST_F(c_log_content_test, multi_send_three_items)
     EXPECT_EQ(lo_items[2].mo_hdr.mu_attrs_count, 0u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[2].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 42u);
 
-        double ld_val      = read_val<double>(lo_items[2].mo_payload, lz_off);
+        double ld_val      = read_val<double>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(double));
         double ld_expected = 3.14;
         EXPECT_EQ(memcmp(&ld_val, &ld_expected, sizeof(double)), 0);
     }
@@ -1538,7 +1574,7 @@ TEST_F(c_log_content_test, item_size_8_byte_aligned)
 TEST_F(c_log_content_test, multi_send_with_fragmentation)
 {
     size_t      lz_buf_sz = p8_test_get_buffer_size();
-    std::string lo_large(lz_buf_sz * 2, 'X');
+    std::string lo_large(frag_string_len(lz_buf_sz), 'X');
 
     bool lb_r1 = false, lb_r2 = false, lb_r3 = false;
 
@@ -1589,7 +1625,7 @@ TEST_F(c_log_content_test, multi_send_with_fragmentation)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_trace_id, 10u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 1u);
     }
 
@@ -1606,7 +1642,7 @@ TEST_F(c_log_content_test, multi_send_with_fragmentation)
     EXPECT_EQ(lo_items[2].mo_hdr.mu_trace_id, 30u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[2].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[2].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 3u);
     }
 
@@ -1668,13 +1704,13 @@ TEST_F(c_log_content_test, multi_send_with_attrs)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_attrs_count, 1u);
     {
         size_t   lz_off = 0;
-        uint64_t lu_val = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint32_t lu_val = read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t));
         EXPECT_EQ(lu_val, 42u);
 
         lz_off           = lo_items[0].mo_hdr.mu_args_size;
-        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[0].mo_payload, lz_off);
+        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[0].mo_payload, lz_off, sizeof(p8_attr_id));
         EXPECT_EQ(li_id, li_attr_int);
-        uint64_t lu_attr = read_val<uint64_t>(lo_items[0].mo_payload, lz_off);
+        uint64_t lu_attr = read_val<uint64_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint64_t));
         EXPECT_EQ(static_cast<int64_t>(lu_attr), 777);
     }
 
@@ -1687,9 +1723,108 @@ TEST_F(c_log_content_test, multi_send_with_attrs)
         EXPECT_EQ(lo_str, "test");
 
         lz_off           = lo_items[1].mo_hdr.mu_args_size;
-        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[1].mo_payload, lz_off);
+        p8_attr_id li_id = read_val<p8_attr_id>(lo_items[1].mo_payload, lz_off, sizeof(p8_attr_id));
         EXPECT_EQ(li_id, li_attr_str);
         std::string lo_attr = read_string(lo_items[1].mo_payload, lz_off);
         EXPECT_EQ(lo_attr, "label_value");
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: verbosity gate in cp8_log::send()
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_log_content_test, verbosity_drops_below_module_threshold)
+{
+    p_p8_module lp_mod = P8_MODULE_INVALID_ID;
+    ASSERT_TRUE(p8_log_register_module("gate", e_p8_error0, &lp_mod));
+    ASSERT_NE(lp_mod, P8_MODULE_INVALID_ID);
+
+    // below the module threshold: rejected before any buffer is touched
+    auto lo_below = run_send_in_thread(
+        [lp_mod]()
+        {
+            return p8_log_sent(e_p8_trace0,
+                               lp_mod,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               1);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_FALSE(lo_below.mb_result);
+    EXPECT_TRUE(parse_captured_buffers().mo_all_captured.empty());
+
+    p8_test_clear_captured_buffers();
+
+    // at the module threshold: accepted and emitted
+    auto lo_at = run_send_in_thread(
+        [lp_mod]()
+        {
+            return p8_log_sent(e_p8_error0,
+                               lp_mod,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               2);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_TRUE(lo_at.mb_result);
+    EXPECT_FALSE(parse_captured_buffers().mo_all_captured.empty());
+}
+
+TEST_F(c_log_content_test, verbosity_default_gates_null_module)
+{
+    // a null module is gated by the whole-p8 default threshold
+    p8_log_set_verbosity(nullptr, e_p8_error0);
+
+    auto lo_below = run_send_in_thread(
+        []()
+        {
+            return p8_log_sent(e_p8_trace0,
+                               nullptr,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               1);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_FALSE(lo_below.mb_result);
+    EXPECT_TRUE(parse_captured_buffers().mo_all_captured.empty());
+
+    p8_test_clear_captured_buffers();
+
+    auto lo_at = run_send_in_thread(
+        []()
+        {
+            return p8_log_sent(e_p8_critical0,
+                               nullptr,
+                               0,
+                               static_cast<uint32_t>(__LINE__),
+                               __FILE__,
+                               __FUNCTION__,
+                               0,
+                               nullptr,
+                               "%d",
+                               2);
+        },
+        __LINE__,
+        __FILE__);
+    EXPECT_TRUE(lo_at.mb_result);
+    EXPECT_FALSE(parse_captured_buffers().mo_all_captured.empty());
 }

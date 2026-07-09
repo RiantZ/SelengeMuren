@@ -1,9 +1,12 @@
 # Protocol8
+
+[![CI](https://github.com/RiantZ/p8/actions/workflows/ci.yml/badge.svg)](https://github.com/RiantZ/p8/actions/workflows/ci.yml)
+
 ## Building
 
 ### Prerequisites
 
-- CMake 3.20+ (tested up to 4.0)
+- CMake 4.0+
 - Python 3
 - C++20 compatible compiler (MSVC, GCC, Clang)
 
@@ -78,14 +81,20 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 | `send_hello_d_no_attrs` | 26.8 ns | 1 000 000 |
 | `send_hello_d_3_attrs` (str + i64 + f64) | 39.3 ns | 1 000 000 |
 
-`full_cycle` throughput (init + emit + release) through the in-memory null sink, 1 000 000 iterations per thread:
+`full_cycle` throughput (init + emit + release) through the in-memory null sink,
+1 000 000 iterations per thread. Numbers are aggregated over 25 runs of the test
+(`ns/call` = full-cycle wall time / total calls):
 
-| Threads | Total calls | ns/call | Throughput |
-|---------|-------------|---------|------------|
-| 1 | 1 000 000 | 22.6 ns | 44.2 M calls/s |
-| 2 | 2 000 000 | 12.7 ns | 78.6 M calls/s |
-| 4 | 4 000 000 | 9.8 ns  | 102.4 M calls/s |
-| 8 | 8 000 000 | 6.4 ns  | 157.0 M calls/s |
+| Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
+|---------|-------------|----------------|-------------|-------|---------------------|
+| 1 | 1 000 000 | 26.6 ns | 32.8 ns | 3.16 ns | 37.6 M calls/s |
+| 2 | 2 000 000 | 13.7 ns | 16.1 ns | 1.85 ns | 72.8 M calls/s |
+| 4 | 4 000 000 | 7.9 ns  | 11.0 ns | 1.29 ns | 125.9 M calls/s |
+| 8 | 8 000 000 | 4.5 ns  | 6.5 ns  | 0.94 ns | 221.1 M calls/s |
+
+Relative spread (stdev/mean) grows with thread count — from ~12 % at 1 thread to
+~19 % at 8 threads — so multi-threaded runs are less stable and p95 sits noticeably
+above the median.
 
 ### Profiling with Tracy
 

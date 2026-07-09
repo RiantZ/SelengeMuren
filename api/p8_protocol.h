@@ -127,6 +127,18 @@ extern "C"
         //* padding to align total size on 8 bytes boundary
     };
 
+    // Serialized representation of s_p8_log_mod
+    // Fixed-size header; variable-length data follows in the buffer.
+    // Name (string utf8) include a NUL terminator.
+    struct s_p8_log_mod_svc
+    {
+        s_p8_svc_hdr ms_hdr;  // service item header, 4
+        uint16_t     mu_id;   // ID of the module
+        uint8_t      mu_verb; // verbosity == e_p8_level
+        //* Serialized name
+        //* padding to align total size on 8 bytes boundary
+    };
+
     // Serialized representation of s_p8_log_desc (the immutable log descriptor).
     // Fixed-size header; variable-length data follows in the buffer.
     // String lengths are byte counts and do NOT include a NUL terminator.
@@ -187,9 +199,12 @@ extern "C"
         uint16_t mu_args_size; // serialized variable arguments size in bytes
 
         // 32 bits
-        uint16_t mu_size;        // total item size in bytes (header + args + attrs + padding)
-        uint8_t  mu_attrs_count; // number of serialized attributes
-        uint8_t  mu_flags;       // todo
+        uint16_t mu_size;   // total item size in bytes (header + args + attrs + padding)
+        uint16_t mu_mod_id; // module ID
+
+        // 16 bits
+        uint8_t mu_attrs_count; // number of serialized attributes
+        uint8_t mu_flags;       // todo
         //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...
         //* Serialized attributes [p8_attr_id + data][...]
         //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b

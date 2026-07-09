@@ -19,18 +19,34 @@
 #include <unordered_map>
 #include <vector>
 
-#define P8_CORE_ACQUIRE_TIMEOUT_MS 100
-#define P8_CORE_THREAD_TIMEOUT_MS  50
+#define P8_CORE_ACQUIRE_TIMEOUT_MS     100
+#define P8_CORE_THREAD_TIMEOUT_MS      50
+
+// Cadence at which the worker pulls-and-resets the per-writer drop counters and
+// folds them into the core loss accumulators. The loop wakes irregularly, so
+// this is enforced against a monotonic clock, not an iteration count.
+#define P8_CORE_STATS_POLL_INTERVAL_MS 250
 
 // When free data-buffer memory drops below this percentage of the total
 // *allocated* pool (buffers that actually exist, i.e. free + outstanding — not
 // the budget cap), acquire_buffer wakes the worker so it can pull accumulated
 // buffers from all writers. Measuring against allocated memory keeps an
 // infinite/default budget from reading as permanent pressure.
-#define P8_CORE_FREE_MEM_PERCENT   25
+#define P8_CORE_FREE_MEM_PERCENT       75
 
 class cp8_tls_writer;
 struct s_p8_log_desc;
+struct s_p8_log_mod;
+
+// Aggregated count of telemetry elements dropped before reaching the sink,
+// split by kind. Returned by cp8_core::get_dropped_stats() and by each writer's
+// pull_dropped().
+struct s_p8_drop_stats
+{
+    uint64_t mu_logs;
+    uint64_t mu_metrics;
+    uint64_t mu_traces;
+};
 
 struct s_p8_attr_desc
 {
@@ -61,6 +77,12 @@ public:
     void register_writer(cp8_tls_writer *ip_writer);
     void unregister_writer(cp8_tls_writer *ip_writer);
 
+    // loss statistics: running totals of dropped logs/metrics/traces. Both the
+    // worker's periodic poll and each writer's destructor flush feed
+    // accumulate_dropped; get_dropped_stats returns a lock-free snapshot.
+    void            accumulate_dropped(const s_p8_drop_stats &ir_stats);
+    s_p8_drop_stats get_dropped_stats() const;
+
     // thread
     bool register_current_thread(const char *ip_name);
     void unregister_current_thread();
@@ -69,6 +91,12 @@ public:
     p8_attr_id attr_register(const char *ip_name, enum e_p8_attr_type ie_type);
     p8_attr_id attr_get(const char *ip_name) const;
     void       sync_attr_cache(std::vector<const s_p8_attr_desc *> &io_cache);
+
+    // log modules
+    bool            register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module);
+    p_p8_module     find_module(const char *ip_name);
+    void            set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity);
+    enum e_p8_level get_verbosity(p_p8_module ip_module);
 
     // buffer pool
     static size_t get_buffer_size();
@@ -128,17 +156,23 @@ private:
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
 
+    // Pull-and-reset every registered writer's drop counters and fold them into
+    // the core accumulators. Runs on the worker's P8_CORE_STATS_POLL_INTERVAL_MS
+    // cadence. Takes mo_writers_lock; the per-writer pull is lock-free.
+    void poll_dropped_stats();
+
     // Write a batch of ready data buffers to the sink and recycle them. Single
     // choke point for both the worker-pull path and the writer-shutdown ready
     // queue, and the only place data buffers are captured under P8_TESTING.
     void flush_ready(kit::c_lst<uint8_t *> &io_ready);
 
-    // service-data serialization (log + attr descriptors). All helpers below
-    // assume mo_svc_mutex is held by the caller.
+    // service-data serialization (log + attr + module descriptors). All helpers
+    // below assume mo_svc_mutex is held by the caller.
     s_p8_svc_buf *svc_acquire_new();
     uint8_t      *svc_reserve(size_t iz_padded);
     void          serialize_attr_desc(const s_p8_attr_desc *ip_desc);
     void          serialize_log_desc(const struct s_p8_log_desc *ip_desc);
+    void          serialize_log_mod(const s_p8_log_mod *ip_mod);
 
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };
@@ -162,6 +196,13 @@ private:
     // acquire_buffer to detect pool pressure and wake the worker.
     std::atomic<size_t> mu_outstanding_buffers { 0 };
 
+    // Running totals of dropped telemetry elements, fed by poll_dropped_stats()
+    // on the worker cadence and by each writer's destructor flush. Monotonic;
+    // read lock-free via get_dropped_stats(). Only logs are wired today.
+    std::atomic<uint64_t> mu_dropped_logs { 0 };
+    std::atomic<uint64_t> mu_dropped_metrics { 0 };
+    std::atomic<uint64_t> mu_dropped_traces { 0 };
+
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;
     std::mutex                          mo_log_desc_mutex;
@@ -170,6 +211,14 @@ private:
     std::vector<s_p8_attr_desc *>               mo_attr_descs;
     std::unordered_map<std::string, p8_attr_id> mo_attr_name_map;
     mutable std::mutex                          mo_attr_mutex;
+
+    // module registry (global, mutex-protected). The handle handed to callers is
+    // a pointer to the owned s_p8_log_mod; me_default_verbosity backs the
+    // null-module (whole-p8) case of set/get_verbosity.
+    std::vector<s_p8_log_mod *>                     mo_log_mods;
+    std::unordered_map<std::string, s_p8_log_mod *> mo_log_mod_map;
+    std::mutex                                      mo_log_mod_mutex;
+    std::atomic<enum e_p8_level>                    me_default_verbosity { e_p8_trace0 };
 
     // serialized service data (log + attr descriptors), drained by the worker
     // thread. The last element is the current in-progress buffer; the earlier
@@ -242,4 +291,5 @@ size_t                                   p8_test_get_writer_count();
 cp8_tls_writer                          *p8_test_get_writers_head();
 std::vector<std::vector<uint8_t>>        p8_test_get_service_buffers();
 void                                     p8_test_drain_writers();
+s_p8_drop_stats                          p8_test_get_dropped_stats();
 #endif

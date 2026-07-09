@@ -345,45 +345,10 @@ size_t cp8_log::parse_format_string(struct s_p8_log_varg *op_args, size_t iz_arg
     return lz_count;
 }
 
-static thread_local cp8_log go_tls_log;
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_log::cp8_log()
     : cp8_tls_writer(&mo_lock)
 {
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_log::set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity)
-{
-    (void)ip_module;
-    (void)ie_verbosity;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-enum e_p8_level cp8_log::get_verbosity(p_p8_module ip_module)
-{
-    (void)ip_module;
-    return e_p8_trace0;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_log::register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module)
-{
-    (void)ip_name;
-    (void)ie_verbosity;
-    if(op_module)
-    {
-        *op_module = P8_MODULE_INVALID_ID;
-    }
-    return false;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-p_p8_module cp8_log::find_module(const char *ip_name)
-{
-    (void)ip_name;
-    return P8_MODULE_INVALID_ID;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -407,10 +372,24 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     size_t             lz_attrs_written = 0;
     uint8_t            lu_attrs_count   = 0;
     size_t             lz_frag_commit   = 0;
+    uint16_t           lu_mod_id        = 0xFFFF;
+    enum e_p8_level    le_min           = e_p8_trace0;
 
-    // TODO: need to store in s_p8_log_item_hdr
-    // TODO: need to check verbosity and drop if below min verbosity
-    (void)ip_module;
+    // verbosity gate: reject records below the module's threshold (or the whole-p8 default for a null module)
+    if(ip_module)
+    {
+        le_min    = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mb_vervosity.load(std::memory_order_relaxed);
+        lu_mod_id = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mu_id;
+    }
+    else if(mp_core)
+    {
+        le_min = mp_core->get_verbosity(nullptr);
+    }
+
+    if(ie_level < le_min)
+    {
+        return false;
+    }
 
     std::lock_guard<kit::c_spin_lock> lo_guard(mo_lock);
 
@@ -436,6 +415,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         mp_buffer = mp_core->acquire_buffer();
         if(!mp_buffer) [[unlikely]]
         {
+            mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
@@ -483,8 +463,9 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_hdr->mu_trace_id    = iu_trace_id;
         lp_hdr->mu_thread_id   = mu_thread_id;
         lp_hdr->mu_level       = static_cast<uint8_t>(ie_level);
-        lp_hdr->mu_processor   = 0;
+        lp_hdr->mu_processor   = 0; // TODO: get current processor CORE
         lp_hdr->mu_attrs_count = 0;
+        lp_hdr->mu_mod_id      = lu_mod_id;
         lp_hdr->mu_flags       = 0;
 
         lp_dst                 = lp_base + sizeof(struct s_p8_log_item_dat);
@@ -696,7 +677,7 @@ lbl_discard:
     // the buffers this record added, leaving earlier complete records intact.
     lp_hdr->mu_args_size   = static_cast<uint16_t>(lz_args_written);
     lp_hdr->mu_attrs_count = lu_attrs_count;
-    lp_hdr->mu_size        = static_cast<uint32_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
+    lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
 
     while(mo_fragments.size() > lz_frag_commit)
     {
@@ -704,7 +685,7 @@ lbl_discard:
     }
     mp_buffer   = nullptr;
     mz_buf_used = 0;
-    ++mu_dropped_records;
+    mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
 
     return false;
 }
@@ -714,25 +695,48 @@ extern "C"
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     void p8_log_set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity)
     {
-        go_tls_log.set_verbosity(ip_module, ie_verbosity);
+        cp8_core *lp_core = cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS);
+        if(lp_core)
+        {
+            lp_core->set_verbosity(ip_module, ie_verbosity);
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     enum e_p8_level p8_log_get_verbosity(p_p8_module ip_module)
     {
-        return go_tls_log.get_verbosity(ip_module);
+        cp8_core *lp_core = cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS);
+        if(lp_core)
+        {
+            return lp_core->get_verbosity(ip_module);
+        }
+        return e_p8_trace0;
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_log_register_module(const char *ip_name, enum e_p8_level ie_verbosity, p_p8_module *op_module)
     {
-        return go_tls_log.register_module(ip_name, ie_verbosity, op_module);
+        cp8_core *lp_core = cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS);
+        if(!lp_core)
+        {
+            if(op_module)
+            {
+                *op_module = P8_MODULE_INVALID_ID;
+            }
+            return false;
+        }
+        return lp_core->register_module(ip_name, ie_verbosity, op_module);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     p_p8_module p8_log_find_module(const char *ip_name)
     {
-        return go_tls_log.find_module(ip_name);
+        cp8_core *lp_core = cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS);
+        if(!lp_core)
+        {
+            return P8_MODULE_INVALID_ID;
+        }
+        return lp_core->find_module(ip_name);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -747,9 +751,10 @@ extern "C"
                      const char                 *ip_format,
                      ...)
     {
-        va_list lo_args;
+        thread_local cp8_log lo_tls_log;
+        va_list              lo_args;
         va_start(lo_args, ip_format);
-        bool lb_result = go_tls_log.send(ie_level,
+        bool lb_result = lo_tls_log.send(ie_level,
                                          ip_module,
                                          iu_trace_id,
                                          iu_line,
@@ -775,7 +780,8 @@ extern "C"
                          const char                 *ip_format,
                          va_list                    *ip_va_list)
     {
-        return go_tls_log.send(ie_level,
+        thread_local cp8_log lo_tls_log;
+        return lo_tls_log.send(ie_level,
                                ip_module,
                                iu_trace_id,
                                iu_line,
@@ -788,11 +794,3 @@ extern "C"
     }
 
 } // extern "C"
-
-#ifdef P8_TESTING
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-uint64_t p8_test_get_tls_dropped_records()
-{
-    return go_tls_log.get_dropped_records();
-}
-#endif

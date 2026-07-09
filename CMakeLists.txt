@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20...4.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 4.0 FATAL_ERROR)
 
 project(Protocol8)
 
@@ -54,6 +54,10 @@ set(ROOT_P8_PATH ${PROJECT_SOURCE_DIR} CACHE INTERNAL "")
 if(MSVC)
     add_compile_definitions(_UNICODE UNICODE)
 
+    # <windows.h> (pulled in via kit) defines min()/max() macros that clobber
+    # std::min/std::max; NOMINMAX suppresses them.
+    add_compile_definitions(NOMINMAX)
+
     if(NOT COMMAND set_ide_folder)
         macro(set_ide_folder _project_name)
             string(LENGTH ${ROOT_P8_PATH} ROOT_P8_PATH_LEN)
@@ -71,6 +75,10 @@ if(MSVC)
     #enable_cpp_c_compiler_flag_if_supported("/Wall")
     enable_cpp_c_compiler_flag_if_supported("/W4")
     enable_cpp_c_compiler_flag_if_supported("/WX")
+    # C4324: structure padded due to alignas() specifier. The padding is
+    # intentional (cache-line alignment via alignas(64)), so silence it rather
+    # than let /WX turn it into an error.
+    enable_cpp_c_compiler_flag_if_supported("/wd4324")
 else()
     enable_c_compiler_flag_if_supported("-std=gnu99")
 

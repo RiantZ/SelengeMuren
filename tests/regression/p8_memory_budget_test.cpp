@@ -163,12 +163,60 @@ TEST_F(c_p8_memory_budget_test, concurrent_reserve_release_stays_within_limit)
     EXPECT_EQ(lu_concurrent_holders.load(), 0u);
     EXPECT_LE(lu_max_holders.load(), lz_max_slots);
 
-    // sanity: under heavy contention with capped slots, both paths must be exercised
+    // sanity: the stress loop must have exercised the success path
     size_t lz_success = lu_total_success.load();
     size_t lz_failure = lu_total_failure.load();
     EXPECT_EQ(lz_success + lz_failure, lz_thread_count * lz_iterations);
     EXPECT_GT(lz_success, 0u) << "no successful reservations — test degenerate";
-    EXPECT_GT(lz_failure, 0u) << "no failed reservations — contention too low to validate try_reserve";
+
+    // Deterministic rejection burst: every thread attempts a single reserve at
+    // once and holds it until all threads have attempted, so the budget stays
+    // saturated for the whole burst. With more threads than slots, exactly
+    // lz_max_slots reservations succeed and the rest MUST be rejected — this
+    // validates the try_reserve failure path without relying on scheduling
+    // timing (the loop above cannot guarantee overlap on a fast machine).
+    std::atomic<size_t>      lu_burst_success { 0 };
+    std::atomic<size_t>      lu_burst_failure { 0 };
+    std::latch               lo_burst_latch(lz_thread_count);
+    std::latch               lo_attempt_done(lz_thread_count);
+    std::vector<std::thread> lo_burst_threads;
+    lo_burst_threads.reserve(lz_thread_count);
+
+    for(size_t lz_i = 0; lz_i < lz_thread_count; ++lz_i)
+    {
+        lo_burst_threads.emplace_back(
+            [&]()
+            {
+                lo_burst_latch.arrive_and_wait();
+                bool lb_reserved = lo_budget.try_reserve(lz_chunk_size);
+                if(lb_reserved)
+                {
+                    lu_burst_success.fetch_add(1, std::memory_order_relaxed);
+                }
+                else
+                {
+                    lu_burst_failure.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                // hold the slot until every thread has attempted, keeping the
+                // budget saturated so rejections are guaranteed
+                lo_attempt_done.arrive_and_wait();
+                if(lb_reserved)
+                {
+                    lo_budget.release(lz_chunk_size);
+                }
+            });
+    }
+
+    for(auto &lo_t : lo_burst_threads)
+    {
+        lo_t.join();
+    }
+
+    EXPECT_EQ(lu_burst_success.load(), lz_max_slots) << "budget admitted the wrong number of concurrent reservations";
+    EXPECT_EQ(lu_burst_failure.load(), lz_thread_count - lz_max_slots)
+        << "try_reserve failed to reject over-capacity requests";
+    EXPECT_EQ(lo_budget.get_used(), 0u) << "leak after burst reserve/release";
 }
 
 TEST_F(c_p8_memory_budget_test, concurrent_reserve_release_exact_accounting)

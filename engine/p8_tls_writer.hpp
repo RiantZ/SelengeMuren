@@ -2,6 +2,7 @@
 
 #include "p8_core.hpp"
 
+#include <atomic>
 #include <vector>
 #include "kit/spin_lock.hpp"
 
@@ -38,6 +39,11 @@ protected:
     // owning lock is taken internally, so this never races with send().
     void pull(kit::c_lst<uint8_t *> &io_data);
 
+    // Atomically read-and-reset the three drop counters and return them. Uses
+    // atomic exchange (no spin lock), so it never contends with send() on the
+    // hot path and can run while the writer is live.
+    s_p8_drop_stats pull_dropped();
+
     static size_t serialize_utf8_string(uint8_t *op_dst, size_t iz_avail, const char *ip_str);
 
     bool copy_fragmented(uint8_t   *&io_dst,
@@ -69,6 +75,15 @@ protected:
     // from std::hash<std::thread::id>
     uint32_t          mu_thread_id = 0;
     kit::c_spin_lock *mp_lock      = nullptr;
+
+    // Per-thread dropped-element counters, incremented on the hot path at each
+    // discard site (single relaxed atomic add). The core pulls-and-resets them
+    // via pull_dropped() on its stats cadence and on destruction. Each subclass
+    // bumps the counter for its own kind; only cp8_log does so today, so metrics
+    // and traces stay 0 until those become writers.
+    std::atomic<uint64_t> mu_dropped_logs { 0 };
+    std::atomic<uint64_t> mu_dropped_metrics { 0 };
+    std::atomic<uint64_t> mu_dropped_traces { 0 };
 
     cp8_tls_writer *mp_next_writer = nullptr;
     cp8_tls_writer *mp_prev_writer = nullptr;

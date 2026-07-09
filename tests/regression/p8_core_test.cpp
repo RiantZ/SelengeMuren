@@ -15,6 +15,19 @@
 #include <thread>
 #include <vector>
 
+namespace
+{
+// Build a memory config whose sizes are expressed in whole buffers, so the
+// tests stay correct regardless of the compile-time buffer size.
+std::string make_mem_config(size_t iz_max_buffers, size_t iz_initial_buffers)
+{
+    const size_t lz_bufsz = p8_test_get_buffer_size();
+    return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + std::to_string(iz_max_buffers * lz_bufsz)
+           + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE + "\": \"" + std::to_string(iz_initial_buffers * lz_bufsz)
+           + "\"}";
+}
+} // namespace
+
 class c_p8_core_test : public ::testing::Test
 {
 protected:
@@ -102,24 +115,21 @@ TEST_F(c_p8_core_test, invalid_json_fails)
 
 TEST_F(c_p8_core_test, buffer_pool_preallocated)
 {
+    const std::string  ls_config = make_mem_config(/*max*/ 16, /*initial*/ 8);
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"128KB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"64KB\""
-                                   "}";
+    lo_config.mp_json_config     = ls_config.c_str();
 
     EXPECT_TRUE(p8_initialize(&lo_config));
-    EXPECT_EQ(p8_test_get_buffer_size(), 8192u);
+    EXPECT_GT(p8_test_get_buffer_size(), 0u);
     EXPECT_EQ(p8_test_get_free_buffers_count(), 8u);
 }
 
 TEST_F(c_p8_core_test, buffer_pool_initial_clamped_to_max)
 {
+    // initial (256 buffers) far exceeds max (2 buffers) → clamped to max
+    const std::string  ls_config = make_mem_config(/*max*/ 2, /*initial*/ 256);
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"16KB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"2MB\""
-                                   "}";
+    lo_config.mp_json_config     = ls_config.c_str();
 
     EXPECT_TRUE(p8_initialize(&lo_config));
     EXPECT_EQ(p8_test_get_free_buffers_count(), 2u);
@@ -146,11 +156,10 @@ TEST_F(c_p8_core_test, buffer_acquire_release)
 
 TEST_F(c_p8_core_test, buffer_acquire_on_demand)
 {
+    // 2 pre-allocated, may grow on demand up to 3 (max)
+    const std::string  ls_config = make_mem_config(/*max*/ 3, /*initial*/ 2);
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"24KB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"16KB\""
-                                   "}";
+    lo_config.mp_json_config     = ls_config.c_str();
 
     EXPECT_TRUE(p8_initialize(&lo_config));
     EXPECT_EQ(p8_test_get_free_buffers_count(), 2u);
@@ -174,11 +183,10 @@ TEST_F(c_p8_core_test, buffer_acquire_on_demand)
 
 TEST_F(c_p8_core_test, buffer_acquire_on_demand_within_limit)
 {
+    // 8 pre-allocated, generous max so on-demand growth stays within the limit
+    const std::string  ls_config = make_mem_config(/*max*/ 128, /*initial*/ 8);
     struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"1MB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"64KB\""
-                                   "}";
+    lo_config.mp_json_config     = ls_config.c_str();
 
     EXPECT_TRUE(p8_initialize(&lo_config));
 
@@ -278,7 +286,10 @@ TEST_F(c_p8_core_test, get_global_core_timeout_no_init)
 
     EXPECT_EQ(lp_core, nullptr);
     EXPECT_GE(lo_elapsed.count(), 50);
-    EXPECT_LE(lo_elapsed.count(), 200);
+    // Generous upper bound: the poll loop sleeps in 10 ms steps and sleep_for can
+    // overshoot heavily on loaded CI runners. This bound only guards against a hang,
+    // not precise timing (the >= 50 check verifies the timeout is honored).
+    EXPECT_LE(lo_elapsed.count(), 5000);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -56,6 +56,12 @@ public:
     // Released memory is kept in the pool — it is not given back to the OS.
     void recycle(uint8_t *ip_buf);
 
+    // Batch variant: returns every buffer in io_bufs to the free list under a
+    // single lock acquisition, then empties io_bufs (keeping its node pool).
+    // Equivalent to calling recycle() per element but pays the mutex cost once,
+    // which matters on the worker's flush path where whole batches are recycled.
+    void recycle(kit::c_lst<uint8_t *> &io_bufs);
+
     size_t get_buffer_size() const;
     size_t get_free_count();
 
