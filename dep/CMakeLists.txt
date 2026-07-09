@@ -1,6 +1,8 @@
 include(FetchContent)
 
-cmake_policy(SET CMP0205 NEW)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.30)
+    cmake_policy(SET CMP0205 NEW)
+endif()
 
 # SYSTEM: consume kit as a third-party dependency so its headers are included
 # with -isystem. That suppresses warnings originating inside kit headers (e.g.
