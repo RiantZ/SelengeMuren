@@ -242,10 +242,12 @@ private:
 
     // metric registry (global, mutex-protected). The handle handed to callers is the
     // descriptor's index in mo_mtk_descs; mu_mtk_count mirrors the size for a
-    // lock-free bounds check on the emit hot path.
-    std::vector<s_p8_mtk_desc *> mo_mtk_descs;
-    std::mutex                   mo_mtk_desc_mutex;
-    std::atomic<uint32_t>        mu_mtk_count { 0 };
+    // lock-free bounds check on the emit hot path. mo_mtk_name_map deduplicates
+    // registration by name so re-registering a metric returns its existing id.
+    std::vector<s_p8_mtk_desc *>                 mo_mtk_descs;
+    std::unordered_map<std::string, h_p8_mtk_id> mo_mtk_name_map;
+    std::mutex                                   mo_mtk_desc_mutex;
+    std::atomic<uint32_t>                        mu_mtk_count { 0 };
 
     // serialized service data (log + attr descriptors), drained by the worker
     // thread. The last element is the current in-progress buffer; the earlier

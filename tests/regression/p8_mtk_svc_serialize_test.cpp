@@ -295,3 +295,84 @@ TEST_F(c_mtk_svc_serialize_test, invalid_base_returns_negative)
         EXPECT_NE(lr_entry.mu_type, P8_SVC_TYPE_MTK);
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// deduplication by name
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// count the P8_SVC_TYPE_MTK descriptors carrying the given id
+static int count_mtk_entries(h_p8_mtk_id ii_id)
+{
+    int li_count = 0;
+    for(const auto &lr_entry : collect_service_entries())
+    {
+        if(lr_entry.mu_type != P8_SVC_TYPE_MTK)
+        {
+            continue;
+        }
+        s_p8_mtk_svc lo_mtk = {};
+        memcpy(&lo_mtk, lr_entry.mo_bytes.data(), sizeof(lo_mtk));
+        if(lo_mtk.mi_id == ii_id)
+        {
+            ++li_count;
+        }
+    }
+    return li_count;
+}
+
+TEST_F(c_mtk_svc_serialize_test, duplicate_same_definition_returns_same_id_and_serializes_once)
+{
+    s_p8_mtk_base lo_base  = {};
+    lo_base.mp_name        = "cpu.load";
+    lo_base.mp_description = "cpu load";
+    lo_base.mp_unit        = "percent";
+    lo_base.mb_on          = true;
+    lo_base.md_min         = 0.0;
+    lo_base.md_max         = 100.0;
+
+    h_p8_mtk_id li_first   = create_mtk_in_thread(&lo_base);
+    h_p8_mtk_id li_second  = create_mtk_in_thread(&lo_base);
+    ASSERT_TRUE(P8_IS_METRIC_VALID(li_first));
+    EXPECT_EQ(li_first, li_second);
+
+    // the descriptor is transmitted exactly once
+    EXPECT_EQ(count_mtk_entries(li_first), 1);
+}
+
+TEST_F(c_mtk_svc_serialize_test, duplicate_conflicting_definition_fails)
+{
+    s_p8_mtk_base lo_base  = {};
+    lo_base.mp_name        = "mem.used";
+    lo_base.mp_description = "memory";
+    lo_base.mp_unit        = "bytes";
+    lo_base.mb_on          = true;
+    lo_base.md_min         = 0.0;
+    lo_base.md_max         = 1000.0;
+
+    h_p8_mtk_id li_id      = create_mtk_in_thread(&lo_base);
+    ASSERT_TRUE(P8_IS_METRIC_VALID(li_id));
+
+    // each variant differs from the original in exactly one definition field
+    s_p8_mtk_base lo_unit = lo_base;
+    lo_unit.mp_unit       = "kb";
+    EXPECT_EQ(create_mtk_in_thread(&lo_unit), P8_MTK_ERROR_CONFLICT);
+
+    s_p8_mtk_base lo_min = lo_base;
+    lo_min.md_min        = 1.0;
+    EXPECT_EQ(create_mtk_in_thread(&lo_min), P8_MTK_ERROR_CONFLICT);
+
+    s_p8_mtk_base lo_max = lo_base;
+    lo_max.md_max        = 2000.0;
+    EXPECT_EQ(create_mtk_in_thread(&lo_max), P8_MTK_ERROR_CONFLICT);
+
+    s_p8_mtk_base lo_desc  = lo_base;
+    lo_desc.mp_description = "different";
+    EXPECT_EQ(create_mtk_in_thread(&lo_desc), P8_MTK_ERROR_CONFLICT);
+
+    s_p8_mtk_base lo_on = lo_base;
+    lo_on.mb_on         = false;
+    EXPECT_EQ(create_mtk_in_thread(&lo_on), P8_MTK_ERROR_CONFLICT);
+
+    // none of the failed attempts added another descriptor for this name
+    EXPECT_EQ(count_mtk_entries(li_id), 1);
+}
