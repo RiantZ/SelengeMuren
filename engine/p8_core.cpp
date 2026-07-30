@@ -2,6 +2,7 @@
 #include "p8_config_keys.hpp"
 #include "p8_hash.hpp"
 #include "p8_log.hpp"
+#include "p8_mtk.hpp"
 #include "p8_profiler.hpp"
 #include "p8_sink_file.hpp"
 #include "p8_sink_null.hpp"
@@ -255,6 +256,16 @@ cp8_core::~cp8_core()
     }
     mo_log_mods.clear();
     mo_log_mod_map.clear();
+
+    for(s_p8_mtk_desc *lp_desc : mo_mtk_descs)
+    {
+        std::free(lp_desc->mp_name);
+        std::free(lp_desc->mp_description);
+        std::free(lp_desc->mp_unit);
+        delete lp_desc;
+    }
+    mo_mtk_descs.clear();
+    mo_mtk_name_map.clear();
 
     // drop references to any still-held service buffers; the pool destructor
     // frees the underlying memory below
@@ -831,6 +842,212 @@ enum e_p8_level cp8_core::get_verbosity(p_p8_module ip_module)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Null-safe string equality: two null pointers are equal, a null and a non-null differ.
+static bool is_str_equal(const char *ip_a, const char *ip_b)
+{
+    if(ip_a == ip_b)
+    {
+        return true; // both null or the same pointer
+    }
+    if(!ip_a || !ip_b)
+    {
+        return false; // exactly one is null
+    }
+    return strcmp(ip_a, ip_b) == 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+h_p8_mtk_id cp8_core::register_mtk(const struct s_p8_mtk_base *ip_base)
+{
+    // input validation — nothing acquired yet, so an early return is safe
+    if(!mb_initialized)
+    {
+        return P8_MTK_ERROR_NOT_INITIALIZED;
+    }
+
+    if(!ip_base || !ip_base->mp_name || ip_base->mp_name[0] == '\0')
+    {
+        return P8_MTK_ERROR_INVALID_NAME;
+    }
+
+    h_p8_mtk_id          li_result = P8_MTK_ERROR_ALLOC_FAILED;
+    s_p8_mtk_desc       *lp_desc   = nullptr;
+    char                *lp_name   = nullptr;
+    char                *lp_descr  = nullptr;
+    char                *lp_unit   = nullptr;
+    std::vector<uint8_t> lo_attrs;
+    uint8_t              lu_attrs = 0;
+    const uint8_t        lu_flags = static_cast<uint8_t>(ip_base->mb_on ? P8_MTK_FLAG_ON : 0);
+
+    std::lock_guard<std::mutex> lo_lock(mo_mtk_desc_mutex);
+
+    // Deduplicate by name: an existing metric with an identical definition returns
+    // its id; a same-name metric with a different definition is a conflict error.
+    auto lo_it = mo_mtk_name_map.find(ip_base->mp_name);
+    if(lo_it != mo_mtk_name_map.end())
+    {
+        const s_p8_mtk_desc *lp_ex = mo_mtk_descs[static_cast<size_t>(lo_it->second)];
+        if(lp_ex->mu_flags == lu_flags && lp_ex->md_min == ip_base->md_min && lp_ex->md_max == ip_base->md_max
+           && is_str_equal(lp_ex->mp_description, ip_base->mp_description)
+           && is_str_equal(lp_ex->mp_unit, ip_base->mp_unit))
+        {
+            li_result = lp_ex->mi_id;
+        }
+        else
+        {
+            li_result = P8_MTK_ERROR_CONFLICT;
+        }
+        goto lbl_exit;
+    }
+
+    // new metric: allocate the descriptor and its copied strings
+    lp_name = str_dup(ip_base->mp_name);
+    if(!lp_name)
+    {
+        goto lbl_exit;
+    }
+
+    if(ip_base->mp_description)
+    {
+        lp_descr = str_dup(ip_base->mp_description);
+        if(!lp_descr)
+        {
+            goto lbl_exit;
+        }
+    }
+
+    if(ip_base->mp_unit)
+    {
+        lp_unit = str_dup(ip_base->mp_unit);
+        if(!lp_unit)
+        {
+            goto lbl_exit;
+        }
+    }
+
+    lp_desc = new(std::nothrow) s_p8_mtk_desc;
+    if(!lp_desc)
+    {
+        goto lbl_exit;
+    }
+
+    // encode_attr_blob takes mo_attr_mutex (lock order: mtk_desc -> attr -> svc)
+    lu_attrs                = encode_attr_blob(lo_attrs, ip_base->mp_attrs, ip_base->mz_attrs);
+
+    lp_desc->mi_id          = static_cast<h_p8_mtk_id>(mo_mtk_descs.size());
+    lp_desc->mp_name        = lp_name;
+    lp_desc->mp_description = lp_descr;
+    lp_desc->mp_unit        = lp_unit;
+    lp_desc->mu_flags       = lu_flags;
+    lp_desc->md_min         = ip_base->md_min;
+    lp_desc->md_max         = ip_base->md_max;
+
+    mo_mtk_descs.push_back(lp_desc);
+    mo_mtk_name_map[ip_base->mp_name] = lp_desc->mi_id;
+    mu_mtk_count.store(static_cast<uint32_t>(mo_mtk_descs.size()), std::memory_order_release);
+
+    // transmit the descriptor once so the receiver can resolve mi_id
+    {
+        std::lock_guard<std::mutex> lo_svc_lock(mo_svc_mutex);
+        serialize_mtk_desc(lp_desc, lo_attrs.data(), lo_attrs.size(), lu_attrs);
+    }
+
+    li_result = lp_desc->mi_id;
+
+    // ownership transferred to mo_mtk_descs; disown the local slots
+    lp_desc   = nullptr;
+    lp_name   = nullptr;
+    lp_descr  = nullptr;
+    lp_unit   = nullptr;
+
+lbl_exit:
+    if(lp_desc)
+    {
+        delete lp_desc;
+        lp_desc = nullptr;
+    }
+    if(lp_unit)
+    {
+        std::free(lp_unit);
+        lp_unit = nullptr;
+    }
+    if(lp_descr)
+    {
+        std::free(lp_descr);
+        lp_descr = nullptr;
+    }
+    if(lp_name)
+    {
+        std::free(lp_name);
+        lp_name = nullptr;
+    }
+    return li_result;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint32_t cp8_core::get_mtk_count() const
+{
+    return mu_mtk_count.load(std::memory_order_acquire);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint8_t cp8_core::encode_attr_blob(std::vector<uint8_t>       &or_blob,
+                                   const struct s_p8_attr_val *ip_attrs,
+                                   size_t                      iz_attrs)
+{
+    uint8_t lu_count = 0;
+
+    std::lock_guard<std::mutex> lo_lock(mo_attr_mutex);
+
+    for(size_t lz_i = 0; ip_attrs && lz_i < iz_attrs; ++lz_i)
+    {
+        p8_attr_id li_id  = ip_attrs[lz_i].m_id;
+        size_t     lz_idx = static_cast<size_t>(li_id);
+
+        // skip unregistered / invalid ids; the receiver resolves type from the attr descriptor
+        if(li_id < 0 || lz_idx >= mo_attr_descs.size() || !mo_attr_descs[lz_idx])
+        {
+            continue;
+        }
+
+        const s_p8_attr_desc *lp_ad = mo_attr_descs[lz_idx];
+
+        // [id:int32]
+        const uint8_t *lp_id        = reinterpret_cast<const uint8_t *>(&li_id);
+        or_blob.insert(or_blob.end(), lp_id, lp_id + sizeof(p8_attr_id));
+
+        if(lp_ad->me_type == e_p8_attr_str)
+        {
+            const char *lp_str  = ip_attrs[lz_i].mp_str;
+            size_t      lz_slen = lp_str ? strlen(lp_str) : 0;
+            uint16_t    lu_len
+                = (lz_slen > UINT16_MAX) ? static_cast<uint16_t>(UINT16_MAX) : static_cast<uint16_t>(lz_slen);
+
+            const uint8_t *lp_len = reinterpret_cast<const uint8_t *>(&lu_len);
+            or_blob.insert(or_blob.end(), lp_len, lp_len + sizeof(lu_len));
+            if(lu_len)
+            {
+                const uint8_t *lp_sb = reinterpret_cast<const uint8_t *>(lp_str);
+                or_blob.insert(or_blob.end(), lp_sb, lp_sb + lu_len);
+            }
+        }
+        else
+        {
+            const uint8_t *lp_val = reinterpret_cast<const uint8_t *>(&ip_attrs[lz_i].mu_u64);
+            or_blob.insert(or_blob.end(), lp_val, lp_val + sizeof(uint64_t));
+        }
+
+        ++lu_count;
+        if(lu_count == UINT8_MAX)
+        {
+            break; // mu_attrs_count is a uint8_t
+        }
+    }
+
+    return lu_count;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 uint8_t *cp8_core::acquire_buffer()
 {
     if(!mb_initialized)
@@ -1223,6 +1440,68 @@ void cp8_core::serialize_log_mod(const s_p8_log_mod *ip_mod)
         memcpy(lp_name, ip_mod->mp_name, lz_name);
     }
     lp_name[lz_name] = '\0';
+    // trailing padding is already zeroed by svc_reserve
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::serialize_mtk_desc(const struct s_p8_mtk_desc *ip_desc,
+                                  const uint8_t              *ip_attr_blob,
+                                  size_t                      iz_attr_bytes,
+                                  uint8_t                     iu_attr_count)
+{
+    if(!ip_desc)
+    {
+        return;
+    }
+
+    // truncate over-long strings to the service-string boundary (length modulo)
+    size_t lz_name   = ip_desc->mp_name ? strlen(ip_desc->mp_name) % P8_SVC_STR_MAX_LEN : 0;
+    size_t lz_desc   = ip_desc->mp_description ? strlen(ip_desc->mp_description) % P8_SVC_STR_MAX_LEN : 0;
+    size_t lz_unit   = ip_desc->mp_unit ? strlen(ip_desc->mp_unit) % P8_SVC_STR_MAX_LEN : 0;
+
+    // fixed header + [name][description][unit] (byte counts, no NUL) + attribute
+    // id+value pairs, padded so the whole entry is 8-aligned
+    size_t lz_padded = P8_ALIGN_UP_8(sizeof(s_p8_mtk_svc) + lz_name + lz_desc + lz_unit + iz_attr_bytes);
+
+    uint8_t *lp_dst  = svc_reserve(lz_padded);
+    if(!lp_dst)
+    {
+        return;
+    }
+
+    s_p8_mtk_svc *lp_entry          = reinterpret_cast<s_p8_mtk_svc *>(lp_dst);
+    lp_entry->ms_hdr.mu_packet_type = P8_PACKET_SERVICE;
+    lp_entry->ms_hdr.mu_svc_type    = P8_SVC_TYPE_MTK;
+    lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
+    lp_entry->mi_id                 = ip_desc->mi_id;
+    lp_entry->md_min                = ip_desc->md_min;
+    lp_entry->md_max                = ip_desc->md_max;
+    lp_entry->mu_flags              = ip_desc->mu_flags;
+    lp_entry->mu_attrs_count        = iu_attr_count;
+    lp_entry->mu_name_len           = static_cast<uint16_t>(lz_name);
+    lp_entry->mu_desc_len           = static_cast<uint16_t>(lz_desc);
+    lp_entry->mu_unit_len           = static_cast<uint16_t>(lz_unit);
+
+    uint8_t *lp_var                 = lp_dst + sizeof(s_p8_mtk_svc);
+    if(lz_name)
+    {
+        memcpy(lp_var, ip_desc->mp_name, lz_name);
+        lp_var += lz_name;
+    }
+    if(lz_desc)
+    {
+        memcpy(lp_var, ip_desc->mp_description, lz_desc);
+        lp_var += lz_desc;
+    }
+    if(lz_unit)
+    {
+        memcpy(lp_var, ip_desc->mp_unit, lz_unit);
+        lp_var += lz_unit;
+    }
+    if(iz_attr_bytes)
+    {
+        memcpy(lp_var, ip_attr_blob, iz_attr_bytes);
+    }
     // trailing padding is already zeroed by svc_reserve
 }
 

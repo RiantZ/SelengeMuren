@@ -37,6 +37,7 @@
 class cp8_tls_writer;
 struct s_p8_log_desc;
 struct s_p8_log_mod;
+struct s_p8_mtk_desc;
 
 // Aggregated count of telemetry elements dropped before reaching the sink,
 // split by kind. Returned by cp8_core::get_dropped_stats() and by each writer's
@@ -97,6 +98,15 @@ public:
     p_p8_module     find_module(const char *ip_name);
     void            set_verbosity(p_p8_module ip_module, enum e_p8_level ie_verbosity);
     enum e_p8_level get_verbosity(p_p8_module ip_module);
+
+    // metrics: register a push metric descriptor, serialize it once and return its
+    // handle (>= 0). The handle is the descriptor's index in mo_mtk_descs, used by
+    // cp8_mtk::emit to reference the metric. Returns negative on failure.
+    h_p8_mtk_id register_mtk(const struct s_p8_mtk_base *ip_base);
+
+    // lock-free count of registered metrics; cp8_mtk::emit uses it to bounds-check
+    // an incoming id on the hot path without taking mo_mtk_desc_mutex.
+    uint32_t get_mtk_count() const;
 
     // buffer pool
     static size_t get_buffer_size();
@@ -166,13 +176,23 @@ private:
     // queue, and the only place data buffers are captured under P8_TESTING.
     void flush_ready(kit::c_lst<uint8_t *> &io_ready);
 
-    // service-data serialization (log + attr + module descriptors). All helpers
-    // below assume mo_svc_mutex is held by the caller.
+    // Encode attribute id+value pairs (same wire layout as
+    // cp8_tls_writer::serialize_attrs) into or_blob, resolving each attribute's type
+    // from the registry. Takes mo_attr_mutex, so it must be called WITHOUT
+    // mo_svc_mutex held (lock order: attr -> svc). Returns the count encoded.
+    uint8_t encode_attr_blob(std::vector<uint8_t> &or_blob, const struct s_p8_attr_val *ip_attrs, size_t iz_attrs);
+
+    // service-data serialization (log + attr + module + metric descriptors). All
+    // helpers below assume mo_svc_mutex is held by the caller.
     s_p8_svc_buf *svc_acquire_new();
     uint8_t      *svc_reserve(size_t iz_padded);
     void          serialize_attr_desc(const s_p8_attr_desc *ip_desc);
     void          serialize_log_desc(const struct s_p8_log_desc *ip_desc);
     void          serialize_log_mod(const s_p8_log_mod *ip_mod);
+    void          serialize_mtk_desc(const struct s_p8_mtk_desc *ip_desc,
+                                     const uint8_t              *ip_attr_blob,
+                                     size_t                      iz_attr_bytes,
+                                     uint8_t                     iu_attr_count);
 
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };
@@ -219,6 +239,15 @@ private:
     std::unordered_map<std::string, s_p8_log_mod *> mo_log_mod_map;
     std::mutex                                      mo_log_mod_mutex;
     std::atomic<enum e_p8_level>                    me_default_verbosity { e_p8_trace0 };
+
+    // metric registry (global, mutex-protected). The handle handed to callers is the
+    // descriptor's index in mo_mtk_descs; mu_mtk_count mirrors the size for a
+    // lock-free bounds check on the emit hot path. mo_mtk_name_map deduplicates
+    // registration by name so re-registering a metric returns its existing id.
+    std::vector<s_p8_mtk_desc *>                 mo_mtk_descs;
+    std::unordered_map<std::string, h_p8_mtk_id> mo_mtk_name_map;
+    std::mutex                                   mo_mtk_desc_mutex;
+    std::atomic<uint32_t>                        mu_mtk_count { 0 };
 
     // serialized service data (log + attr descriptors), drained by the worker
     // thread. The last element is the current in-progress buffer; the earlier

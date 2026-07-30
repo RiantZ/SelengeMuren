@@ -427,7 +427,13 @@ extern "C"
     typedef int16_t h_p8_mtk_group_id;
 
 /// @brief Check for metric ID validity
-#define P8_IS_METRIC_VALID (id)((id) >= 0)
+#define P8_IS_METRIC_VALID(id)       ((id) >= 0)
+
+/// @brief Error codes returned (as a negative h_p8_mtk_id) by the p8_mtk_* create functions.
+#define P8_MTK_ERROR_NOT_INITIALIZED -1 ///< p8 is not initialized
+#define P8_MTK_ERROR_INVALID_NAME    -2 ///< metric name is null or empty
+#define P8_MTK_ERROR_ALLOC_FAILED    -3 ///< descriptor allocation failed
+#define P8_MTK_ERROR_CONFLICT        -4 ///< a metric with this name already exists with a different definition
 
     /// @brief Callback type for query-based metric: P8 invokes this periodically to obtain the current metric value
     /// @param ip_user_context [in] opaque user-defined context passed during metric creation
@@ -455,8 +461,11 @@ extern "C"
     };
 
     /// @brief Create a push-based metric. Caller is responsible for emitting values via p8_mtk_emit.
+    ///        Registration is idempotent by name: if a metric with the same name and an identical
+    ///        definition (description, unit, min, max, on-state) already exists, its id is returned;
+    ///        a same-name metric with a different definition fails with P8_MTK_ERROR_CONFLICT.
     /// @param ip_base [in] metric descriptor
-    /// @return positive metric ID on success, negative value on failure
+    /// @return positive metric ID on success, negative P8_MTK_ERROR_* code on failure
     h_p8_mtk_id p8_mtk_create(const struct s_p8_mtk_base *ip_base);
 
     /// @brief Emit (push) a sample value for a previously created metric

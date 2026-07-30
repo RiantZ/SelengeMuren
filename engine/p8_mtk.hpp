@@ -1,12 +1,28 @@
 #pragma once
 
-#include "p8_core.hpp"
+#include "p8_tls_writer.hpp"
 
-class cp8_mtk
+#include "kit/spin_lock.hpp"
+
+// Immutable metric descriptor. Owned by the core (cp8_core::mo_mtk_descs), created
+// by register_mtk and serialized once into a P8_SVC_TYPE_MTK service entry. Indexed
+// by mi_id (== position in the registry) for O(1) lookup on the emit path.
+struct s_p8_mtk_desc
 {
+    h_p8_mtk_id mi_id;
+    char       *mp_name;
+    char       *mp_description;
+    char       *mp_unit;
+    uint8_t     mu_flags;
+    double      md_min;
+    double      md_max;
+};
+
+class cp8_mtk : public cp8_tls_writer
+{
+
 public:
     cp8_mtk();
-    ~cp8_mtk();
 
     h_p8_mtk_id       create(const struct s_p8_mtk_base *ip_base);
     bool              emit(h_p8_mtk_id ih_id, double id_value);
@@ -24,5 +40,5 @@ public:
     bool              end_group_emit(h_p8_mtk_group_id ih_group_id);
 
 private:
-    cp8_core *mp_core = nullptr;
+    kit::c_spin_lock mo_lock;
 };
