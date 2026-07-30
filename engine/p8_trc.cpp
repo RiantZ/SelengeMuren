@@ -1,7 +1,5 @@
 #include "p8_trc.hpp"
 
-static thread_local cp8_trc go_tls_trc;
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_trc::cp8_trc()
     : mp_core(cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS))
@@ -62,9 +60,10 @@ extern "C"
                           const char                 *ip_function_args,
                           ...)
     {
-        va_list lo_args;
+        thread_local cp8_trc lo_tls_trc;
+        va_list              lo_args;
         va_start(lo_args, ip_function_args);
-        uint64_t lu_result = go_tls_trc.begin(iu_parent_trace_id,
+        uint64_t lu_result = lo_tls_trc.begin(iu_parent_trace_id,
                                               iu_line,
                                               ip_file,
                                               ip_function,
@@ -79,7 +78,8 @@ extern "C"
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_trc_end(uint64_t iu_trace_id)
     {
-        return go_tls_trc.end(iu_trace_id);
+        thread_local cp8_trc lo_tls_trc;
+        return lo_tls_trc.end(iu_trace_id);
     }
 
 } // extern "C"
