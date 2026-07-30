@@ -1,40 +1,105 @@
 #include "p8_mtk.hpp"
+#include "p8_protocol.h"
+
+#include "kit/time.hpp"
+
+#include <mutex>
 
 static thread_local cp8_mtk go_tls_mtk;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_mtk::cp8_mtk()
-    : mp_core(cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS))
+    : cp8_tls_writer(&mo_lock)
 {
-    if(mp_core)
-    {
-        mp_core->addref();
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-cp8_mtk::~cp8_mtk()
-{
-    if(mp_core)
-    {
-        mp_core->release();
-        mp_core = nullptr;
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 h_p8_mtk_id cp8_mtk::create(const struct s_p8_mtk_base *ip_base)
 {
-    (void)ip_base;
-    return -1;
+    return mp_core ? mp_core->register_mtk(ip_base) : -1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
 {
-    (void)ih_id;
-    (void)id_value;
-    return false;
+    if(!mp_core) [[unlikely]]
+    {
+        return false;
+    }
+
+    // bounds-check the id against the registry (lock-free). A never-created id is a
+    // caller error, not a capacity drop, so it does not bump the drop counter.
+    if(ih_id < 0 || static_cast<uint32_t>(ih_id) >= mp_core->get_mtk_count())
+    {
+        return false;
+    }
+
+    std::lock_guard<kit::c_spin_lock> lo_guard(mo_lock);
+
+    // buffer availability — reuse the current buffer while it can still hold a full
+    // item; otherwise park it (drained later by the worker via pull()). Every item
+    // is a multiple of 8 bytes and so is the buffer header, so mz_buf_used stays
+    // 8-aligned without any per-item padding.
+    if(mp_buffer) [[likely]]
+    {
+        if((mz_buf_max - mz_buf_used) < sizeof(s_p8_mtk_item_dat)) [[unlikely]]
+        {
+            mo_fragments.push_last(mp_buffer);
+            mp_buffer = nullptr;
+        }
+    }
+
+    if(!mp_buffer) [[unlikely]]
+    {
+        mp_buffer = mp_core->acquire_buffer();
+        if(!mp_buffer) [[unlikely]]
+        {
+            mu_dropped_metrics.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+
+        s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
+        lp_buf_hdr->mu_packet_type    = P8_PACKET_METRICS;
+        lp_buf_hdr->mu_flags          = 0;
+        lp_buf_hdr->mu_size           = static_cast<uint16_t>(sizeof(s_p8_data_buf_hdr));
+        lp_buf_hdr->mu_thread_id      = mu_thread_id;
+        lp_buf_hdr->mu_start_time     = kit::get_hires_ticks();
+        lp_buf_hdr->mu_stop_time      = 0;
+
+        mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
+    }
+
+    // write the fixed-size sample item (guaranteed to fit after the check above)
+    uint64_t lu_timestamp = kit::get_hires_ticks();
+    {
+        s_p8_mtk_item_dat *lp_hdr  = reinterpret_cast<s_p8_mtk_item_dat *>(mp_buffer + mz_buf_used);
+
+        lp_hdr->mu_timestamp       = lu_timestamp;
+        lp_hdr->md_value           = id_value;
+        lp_hdr->mi_id              = ih_id;
+        lp_hdr->mu_size            = static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat));
+        lp_hdr->mu_flags           = 0;
+        lp_hdr->mu_attrs_count     = 0;
+
+        mz_buf_used               += sizeof(s_p8_mtk_item_dat);
+    }
+
+    // update the data-buffer header
+    {
+        s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
+        lp_buf_hdr->mu_size           = static_cast<uint16_t>(mz_buf_used);
+        lp_buf_hdr->mu_stop_time      = lu_timestamp;
+    }
+
+    // park the buffer for the worker once it can no longer hold another item
+    if((mz_buf_max - mz_buf_used) < sizeof(s_p8_mtk_item_dat)) [[unlikely]]
+    {
+        mo_fragments.push_last(mp_buffer);
+        mp_buffer   = nullptr;
+        mz_buf_used = 0;
+    }
+
+    return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

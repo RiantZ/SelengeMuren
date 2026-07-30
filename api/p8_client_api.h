@@ -427,7 +427,7 @@ extern "C"
     typedef int16_t h_p8_mtk_group_id;
 
 /// @brief Check for metric ID validity
-#define P8_IS_METRIC_VALID (id)((id) >= 0)
+#define P8_IS_METRIC_VALID(id) ((id) >= 0)
 
     /// @brief Callback type for query-based metric: P8 invokes this periodically to obtain the current metric value
     /// @param ip_user_context [in] opaque user-defined context passed during metric creation

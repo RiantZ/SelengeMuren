@@ -41,13 +41,16 @@ extern "C"
 // buffer. Each entry describes one immutable, pre-serialized descriptor that the
 // library transmits once so the receiver can resolve the compact IDs referenced
 // by the LOGS/TRACES/METRICS data packets.
-#define P8_SVC_TYPE_UNK         0x00     // unknown / unspecified service entry
-#define P8_SVC_TYPE_LOG_DESC    0x01     // log descriptor: hash, line, file, function, format, var-arg types
-#define P8_SVC_TYPE_ATTR        0x02     // attribute descriptor: id, value type, name
-#define P8_SVC_TYPE_THREAD      0x03     // thread descriptor: OS thread id, thread name
-#define P8_SVC_TYPE_TRACE       0x04     // trace descriptor: trace id, parent id, line, file, function, args format
-#define P8_SVC_TYPE_MTK         0x05     // metric descriptor: id, flags, name, description, unit, min/max, on-state
-#define P8_SVC_TYPE_MODULE      0x06     // module descriptor: handle, verbosity, name
+#define P8_SVC_TYPE_UNK         0x00 // unknown / unspecified service entry
+#define P8_SVC_TYPE_LOG_DESC    0x01 // log descriptor: hash, line, file, function, format, var-arg types
+#define P8_SVC_TYPE_ATTR        0x02 // attribute descriptor: id, value type, name
+#define P8_SVC_TYPE_THREAD      0x03 // thread descriptor: OS thread id, thread name
+#define P8_SVC_TYPE_TRACE       0x04 // trace descriptor: trace id, parent id, line, file, function, args format
+#define P8_SVC_TYPE_MTK         0x05 // metric descriptor: id, flags, name, description, unit, min/max, on-state
+#define P8_SVC_TYPE_MODULE      0x06 // module descriptor: handle, verbosity, name
+
+// Metric descriptor flags (s_p8_mtk_svc.mu_flags) carried in a P8_SVC_TYPE_MTK entry.
+#define P8_MTK_FLAG_ON          (1 << 0) // metric initial enabled state (s_p8_mtk_base.mb_on)
 
 #define P8_DATA_FLAG_FRAGMENT   (1 << 0) // buffer tail data continues in the next buffer for the same thread
 #define P8_DATA_FLAG_RESERVED_1 (1 << 1)
@@ -209,6 +212,48 @@ extern "C"
         //* Serialized attributes [p8_attr_id + data][...]
         //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b
         // alignement
+    };
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // METRICS
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // Serialized representation of a metric descriptor (s_p8_mtk_desc). Transmitted
+    // once per metric in a P8_PACKET_SERVICE buffer so the receiver can resolve the
+    // compact mi_id referenced by P8_PACKET_METRICS samples. Fixed-size header;
+    // variable-length data follows. String lengths are byte counts and do NOT
+    // include a NUL terminator.
+    struct s_p8_mtk_svc
+    {
+        s_p8_svc_hdr ms_hdr;         // service item header, 4
+        int32_t      mi_id;          // metric ID (h_p8_mtk_id)
+        double       md_min;         // expected minimum value (visualization hint)
+        double       md_max;         // expected maximum value (visualization hint)
+        uint8_t      mu_flags;       // P8_MTK_FLAG_XXX
+        uint8_t      mu_attrs_count; // number of serialized attribute id+value pairs
+        uint16_t     mu_name_len;    // name string length in bytes
+        uint16_t     mu_desc_len;    // description string length in bytes
+        uint16_t     mu_unit_len;    // unit string length in bytes
+        //* Serialized strings: [name][description][unit]
+        //* Serialized attributes: [p8_attr_id + data] x mu_attrs_count
+        //* padding to align total size on 8 bytes boundary
+    };
+
+    // Per-occurrence metric sample emitted into a P8_PACKET_METRICS buffer. References
+    // its immutable descriptor (s_p8_mtk_svc) by mi_id and carries the runtime value
+    // and timestamp.
+    struct s_p8_mtk_item_dat
+    {
+        uint64_t mu_timestamp; // monotonic clock timestamp
+        double   md_value;     // sample value
+
+        // 64 bits
+        int32_t  mi_id;          // metric descriptor ID (h_p8_mtk_id)
+        uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
+        uint8_t  mu_flags;       // todo
+        uint8_t  mu_attrs_count; // number of serialized attributes (0 in v1)
+        //* Serialized attributes [p8_attr_id + data][...] (none in v1)
+        //* padding to tail to 8 bytes boundary
     };
 
 #ifdef __cplusplus

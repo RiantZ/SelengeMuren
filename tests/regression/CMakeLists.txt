@@ -46,6 +46,9 @@ add_executable(${PROJECT_NAME}
     p8_svc_serialize_test.cpp
     p8_sink_file_test.cpp
     p8_pull_test.cpp
+    p8_mtk_content_test.cpp
+    p8_mtk_svc_serialize_test.cpp
+    p8_mtk_perf_test.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${P8_API} ${CMAKE_SOURCE_DIR}/engine)
