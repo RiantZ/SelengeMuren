@@ -73,6 +73,22 @@ static void report(const char *ip_label, std::vector<double> &or_samples_ns)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Print the running totals of telemetry elements dropped before reaching the
+// sink. Captured via p8_test_get_dropped_stats(); must be read before p8_release
+// since the accumulators are torn down with the instance.
+static void report_drops(const s_p8_drop_stats &ir_drops)
+{
+    const uint64_t lu_total = ir_drops.mu_logs + ir_drops.mu_metrics + ir_drops.mu_traces;
+
+    std::printf("  --- drops ---\n");
+    std::printf("  logs       : %llu\n", static_cast<unsigned long long>(ir_drops.mu_logs));
+    std::printf("  metrics    : %llu\n", static_cast<unsigned long long>(ir_drops.mu_metrics));
+    std::printf("  traces     : %llu\n", static_cast<unsigned long long>(ir_drops.mu_traces));
+    std::printf("  total      : %llu\n", static_cast<unsigned long long>(lu_total));
+    std::printf("\n");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static void run_batches(const std::function<void(uint32_t)> &ir_call, std::vector<double> &or_samples_ns)
 {
     for(uint32_t lu_w = 0; lu_w < lu_warmup_iters; ++lu_w)
@@ -131,6 +147,7 @@ TEST_F(c_mtk_perf_test, DISABLED_emit_single_thread)
     run_batches([li_id](uint32_t iu_i) { p8_mtk_emit(li_id, static_cast<double>(iu_i)); }, lo_samples);
 
     report("emit_single_thread", lo_samples);
+    report_drops(p8_test_get_dropped_stats());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -245,12 +262,17 @@ TEST_P(c_mtk_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 
     const s_emit_stats lo_stats = emit_from_threads(lu_threads, lu_perf_iters_per_thread, lu_perf_warmup_per_thread);
 
+    // Snapshot drops before release: producer writers flushed their counters into
+    // the core accumulators on thread join, and p8_release tears them down.
+    const s_p8_drop_stats lo_drops = p8_test_get_dropped_stats();
+
     p8_release();
 
     report_throughput("full_cycle emit (null sink)",
                       lu_threads,
                       static_cast<uint64_t>(lu_threads) * lu_perf_iters_per_thread,
                       lo_stats.md_emit_ns);
+    report_drops(lo_drops);
 }
 
 INSTANTIATE_TEST_SUITE_P(ThreadCounts,

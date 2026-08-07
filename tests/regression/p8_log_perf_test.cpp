@@ -82,6 +82,22 @@ static void report(const char *ip_label, std::vector<double> &or_samples_ns)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Print the running totals of telemetry elements dropped before reaching the
+// sink. Captured via p8_test_get_dropped_stats(); must be read before p8_release
+// since the accumulators are torn down with the instance.
+static void report_drops(const s_p8_drop_stats &ir_drops)
+{
+    const uint64_t lu_total = ir_drops.mu_logs + ir_drops.mu_metrics + ir_drops.mu_traces;
+
+    std::printf("  --- drops ---\n");
+    std::printf("  logs       : %llu\n", static_cast<unsigned long long>(ir_drops.mu_logs));
+    std::printf("  metrics    : %llu\n", static_cast<unsigned long long>(ir_drops.mu_metrics));
+    std::printf("  traces     : %llu\n", static_cast<unsigned long long>(ir_drops.mu_traces));
+    std::printf("  total      : %llu\n", static_cast<unsigned long long>(lu_total));
+    std::printf("\n");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static void run_batches(const std::function<void(uint32_t)> &ir_call, std::vector<double> &or_samples_ns)
 {
     for(uint32_t lu_w = 0; lu_w < lu_warmup_iters; ++lu_w)
@@ -113,8 +129,8 @@ protected:
     {
         struct s_p8_config lo_config = {};
         lo_config.mp_json_config     = "{"
-                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"16MB\","
-                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"16MB\""
+                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
+                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\""
                                        "}";
 
         ASSERT_TRUE(p8_initialize(&lo_config));
@@ -146,6 +162,7 @@ TEST_F(c_log_perf_test, DISABLED_send_hello_d_no_attrs)
         lo_samples);
 
     report("send_hello_d_no_attrs", lo_samples);
+    report_drops(p8_test_get_dropped_stats());
 }
 
 TEST_F(c_log_perf_test, DISABLED_send_hello_d_3_attrs)
@@ -184,6 +201,7 @@ TEST_F(c_log_perf_test, DISABLED_send_hello_d_3_attrs)
         lo_samples);
 
     report("send_hello_d_3_attrs", lo_samples);
+    report_drops(p8_test_get_dropped_stats());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -331,8 +349,8 @@ TEST_P(c_log_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
     struct s_p8_config lo_config = {};
     lo_config.mp_json_config     = "{"
                                    "\"" P8_CFG_KEY_SINK "\": \"" P8_CFG_VAL_SINK_NETWORK_NULL "\","
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"32MB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"32MB\""
+                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
+                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\""
                                    "}";
 
     const auto lo_init_start     = std::chrono::steady_clock::now();
@@ -341,7 +359,11 @@ TEST_P(c_log_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 
     const s_emit_stats lo_stats = emit_from_threads(lu_threads, lu_perf_iters_per_thread, lu_perf_warmup_per_thread);
 
-    const auto lo_rel_start     = std::chrono::steady_clock::now();
+    // Snapshot drops before release: producer writers flushed their counters into
+    // the core accumulators on thread join, and p8_release tears them down.
+    const s_p8_drop_stats lo_drops = p8_test_get_dropped_stats();
+
+    const auto lo_rel_start        = std::chrono::steady_clock::now();
     p8_release();
     const auto lo_rel_end   = std::chrono::steady_clock::now();
 
@@ -356,6 +378,7 @@ TEST_P(c_log_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
                       static_cast<uint64_t>(lu_threads) * lu_perf_iters_per_thread,
                       ld_full_ns);
     report_per_thread(lo_stats.mo_thread_ns, lu_perf_iters_per_thread);
+    report_drops(lo_drops);
 }
 
 INSTANTIATE_TEST_SUITE_P(ThreadCounts,

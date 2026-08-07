@@ -391,7 +391,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         return false;
     }
 
-    std::lock_guard<kit::c_spin_lock> lo_guard(mo_lock);
+    std::unique_lock<kit::c_spin_lock> lo_guard(mo_lock);
 
     if(!mp_core) [[unlikely]]
     {
@@ -412,12 +412,19 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
     if(!mp_buffer) [[unlikely]]
     {
-        mp_buffer = mp_core->acquire_buffer();
-        if(!mp_buffer) [[unlikely]]
+        // Block until a buffer frees rather than dropping.
+        lo_guard.unlock();
+        // local variable needed for avoiding data corruption by Core since mutex is unlocked
+        uint8_t *lp_new = mp_core->acquire_buffer(true);
+        lo_guard.lock();
+
+        if(!lp_new) [[unlikely]]
         {
+            // acquire_buffer(true) returns nullptr only on shutdown
             mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
+        mp_buffer                     = lp_new;
         s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
         lp_buf_hdr->mu_packet_type    = P8_PACKET_LOGS;
         lp_buf_hdr->mu_flags          = 0;

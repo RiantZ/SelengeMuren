@@ -110,9 +110,14 @@ public:
 
     // buffer pool
     static size_t get_buffer_size();
-    uint8_t      *acquire_buffer();
-    void          release_buffer(uint8_t *ip_buffer);
-    void          release_buffers(kit::c_lst<uint8_t *> &io_buffers);
+    // Acquire a data buffer. ib_wait == false (default) keeps the non-blocking
+    // behavior: returns nullptr immediately when the pool is exhausted. ib_wait ==
+    // true blocks the caller in a strict-FIFO queue until a buffer is recycled,
+    // returning nullptr only on shutdown. The blocking form MUST NOT be called from
+    // the worker thread, nor while holding a writer spinlock (see cp8_log/cp8_mtk).
+    uint8_t *acquire_buffer(bool ib_wait = false);
+    void     release_buffer(uint8_t *ip_buffer);
+    void     release_buffers(kit::c_lst<uint8_t *> &io_buffers);
 
     // ready-queue: producers hand filled data buffers to the core for the
     // worker thread to consume. submit_buffer takes a single buffer,
@@ -286,6 +291,8 @@ private:
 #ifdef P8_TESTING
     friend size_t                                   p8_test_get_buffer_size();
     friend size_t                                   p8_test_get_free_buffers_count();
+    friend size_t                                   p8_test_get_waiter_count();
+    friend uint64_t                                 p8_test_get_wait_arrivals();
     friend void                                     p8_test_enable_buffer_capture();
     friend void                                     p8_test_disable_buffer_capture();
     friend size_t                                   p8_test_get_captured_count();
@@ -310,7 +317,11 @@ uint32_t                                 p8_test_get_instance_count();
 size_t                                   p8_test_get_buffer_size();
 size_t                                   p8_test_get_free_buffers_count();
 uint8_t                                 *p8_test_acquire_buffer();
+uint8_t                                 *p8_test_acquire_buffer_wait();
+size_t                                   p8_test_get_waiter_count();
+uint64_t                                 p8_test_get_wait_arrivals();
 void                                     p8_test_release_buffer(uint8_t *ip_buffer);
+void                                     p8_test_release_buffers(uint8_t *const *ip_buffers, size_t iz_count);
 void                                     p8_test_enable_buffer_capture();
 void                                     p8_test_disable_buffer_capture();
 size_t                                   p8_test_get_captured_count();
