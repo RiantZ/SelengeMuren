@@ -444,6 +444,12 @@ void cp8_core::stop_worker()
         return;
     }
 
+    // Wake any producer parked in acquire_buffer(true) BEFORE stopping the worker.
+    if(mp_data_pool)
+    {
+        mp_data_pool->stop_waiters();
+    }
+
     mo_worker_event.set(mu_event_stop);
 
     if(mo_worker_thread.joinable())
@@ -1048,13 +1054,25 @@ uint8_t cp8_core::encode_attr_blob(std::vector<uint8_t>       &or_blob,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-uint8_t *cp8_core::acquire_buffer()
+uint8_t *cp8_core::acquire_buffer(bool ib_wait)
 {
     if(!mb_initialized)
     {
         return nullptr;
     }
 
+#ifdef P8_TESTING
+    // Capture mode makes the worker skip recycling while a test synchronously drives
+    // draining, so a blocking acquire could never be satisfied. Degrade to
+    // non-blocking here so capture-based tests keep their drop-on-exhaustion contract.
+    if(ib_wait && mb_capture_enabled.load(std::memory_order_relaxed))
+    {
+        ib_wait = false;
+    }
+#endif
+
+    // Fast path shared by both modes: take a buffer (grow-on-demand fires inside
+    // acquire_no_lock) and sample pressure under a single lock.
     mp_data_pool->lock();
     cp8_buffer_pool::s_stat ls_stat = {};
     uint8_t                *lp_buf  = mp_data_pool->acquire_no_lock();
@@ -1062,24 +1080,32 @@ uint8_t *cp8_core::acquire_buffer()
     mp_data_pool->stat(ls_stat);
     mp_data_pool->unlock();
 
-    if(!lp_buf)
+    if(lp_buf)
+    {
+        // Track pool pressure: when free memory drops below P8_CORE_FREE_MEM_PERCENT
+        // of the budget max, wake the worker so it pulls from all writers. Free
+        // memory here is the exact budget headroom (max - outstanding), so a pool
+        // that has grown only partially is not treated as being under pressure.
+        // Debounced: skip the wake if a previous pressure notify is still unhandled,
+        // so a burst of acquiring threads does not storm the worker with redundant
+        // set() calls (each a pthread lock + a counting-semaphore post).
+        if(ls_stat.mz_max_size > 0 && (ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
+        {
+            notify_pressure();
+        }
+
+        return lp_buf;
+    }
+
+    // Pool exhausted. Non-blocking callers drop immediately.
+    if(!ib_wait)
     {
         return nullptr;
     }
 
-    // Track pool pressure: when free memory drops below P8_CORE_FREE_MEM_PERCENT
-    // of the budget max, wake the worker so it pulls from all writers. Free
-    // memory here is the exact budget headroom (max - outstanding), so a pool
-    // that has grown only partially is not treated as being under pressure.
-    // Debounced: skip the wake if a previous pressure notify is still unhandled,
-    // so a burst of acquiring threads does not storm the worker with redundant
-    // set() calls (each a pthread lock + a counting-semaphore post).
-    if(ls_stat.mz_max_size > 0 && (ls_stat.mz_free_size * 100ull / ls_stat.mz_max_size) < P8_CORE_FREE_MEM_PERCENT)
-    {
-        notify_pressure();
-    }
-
-    return lp_buf;
+    // Blocking caller: we truly have to wait.
+    notify_pressure();
+    return mp_data_pool->acquire_wait();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1256,7 +1282,10 @@ size_t cp8_core::get_buffer_size()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 s_p8_svc_buf *cp8_core::svc_acquire_new()
 {
-    uint8_t *lp_buf = acquire_buffer();
+    // Non-blocking on purpose: this runs on the worker thread, which is the sole
+    // recycler of buffers. Blocking here would wait for a buffer only the worker
+    // itself can free — an immediate self-deadlock. On exhaustion we skip instead.
+    uint8_t *lp_buf = acquire_buffer(false);
     if(!lp_buf)
     {
         // TODO: print error
@@ -1784,7 +1813,33 @@ size_t p8_test_get_free_buffers_count()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 uint8_t *p8_test_acquire_buffer()
 {
-    return gp_instance ? gp_instance->acquire_buffer() : nullptr;
+    return gp_instance ? gp_instance->acquire_buffer(false) : nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint8_t *p8_test_acquire_buffer_wait()
+{
+    return gp_instance ? gp_instance->acquire_buffer(true) : nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+size_t p8_test_get_waiter_count()
+{
+    if(!gp_instance || !gp_instance->mp_data_pool)
+    {
+        return 0;
+    }
+    return gp_instance->mp_data_pool->get_wait_count();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint64_t p8_test_get_wait_arrivals()
+{
+    if(!gp_instance || !gp_instance->mp_data_pool)
+    {
+        return 0;
+    }
+    return gp_instance->mp_data_pool->get_wait_arrivals();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1794,6 +1849,24 @@ void p8_test_release_buffer(uint8_t *ip_buffer)
     {
         gp_instance->release_buffer(ip_buffer);
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void p8_test_release_buffers(uint8_t *const *ip_buffers, size_t iz_count)
+{
+    if(!gp_instance || !ip_buffers)
+    {
+        return;
+    }
+
+    // Build a batch and hand it to the pool in one shot so the test exercises the
+    // batch recycle/hand-off path (the worker's flush path in production).
+    kit::c_lst<uint8_t *> lo_buffers;
+    for(size_t lz_i = 0; lz_i < iz_count; ++lz_i)
+    {
+        lo_buffers.push_last(ip_buffers[lz_i]);
+    }
+    gp_instance->release_buffers(lo_buffers);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

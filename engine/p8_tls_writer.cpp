@@ -48,7 +48,12 @@ bool cp8_tls_writer::rotate_fragment_buffer(uint64_t iu_timestamp)
 
     mo_fragments.push_last(mp_buffer);
 
-    mp_buffer = mp_core->acquire_buffer();
+    // Non-blocking on purpose: this runs mid-record (a single item is being split
+    // across buffers under the writer spinlock). Blocking here would hold the
+    // spinlock across the wait (deadlocking the worker/recycler) and pin partial
+    // fragments the worker cannot flush. On exhaustion the caller rolls the record
+    // back via lz_frag_commit instead.
+    mp_buffer = mp_core->acquire_buffer(false);
     if(!mp_buffer) [[unlikely]]
     {
         return false;

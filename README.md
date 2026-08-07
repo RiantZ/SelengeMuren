@@ -72,14 +72,18 @@ cd _Build_mac && ./tests/regression/P8_RegressionTests \
     --gtest_also_run_disabled_tests
 ```
 
-Reference numbers (Apple M4 Max, macOS, Release).
+Reference numbers (Apple M4 Max, macOS, Release). Producers run with blocking
+backpressure: on an exhausted pool a producer waits for a free buffer instead of
+dropping, so every run below records **zero drops**.
+
+#### Logs
 
 Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations, median ns/call):
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `send_hello_d_no_attrs` | 26.8 ns | 1 000 000 |
-| `send_hello_d_3_attrs` (str + i64 + f64) | 39.3 ns | 1 000 000 |
+| `send_hello_d_no_attrs` | 28.9 ns | 1 000 000 |
+| `send_hello_d_3_attrs` (str + i64 + f64) | 40.1 ns | 1 000 000 |
 
 `full_cycle` throughput (init + emit + release) through the in-memory null sink,
 1 000 000 iterations per thread. Numbers are aggregated over 25 runs of the test
@@ -87,14 +91,35 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 26.6 ns | 32.8 ns | 3.16 ns | 37.6 M calls/s |
-| 2 | 2 000 000 | 13.7 ns | 16.1 ns | 1.85 ns | 72.8 M calls/s |
-| 4 | 4 000 000 | 7.9 ns  | 11.0 ns | 1.29 ns | 125.9 M calls/s |
-| 8 | 8 000 000 | 4.5 ns  | 6.5 ns  | 0.94 ns | 221.1 M calls/s |
+| 1 | 1 000 000 | 29.7 ns | 40.8 ns | 5.73 ns | 33.6 M calls/s |
+| 2 | 2 000 000 | 9.9 ns  | 10.3 ns | 0.23 ns | 101.2 M calls/s |
+| 4 | 4 000 000 | 5.4 ns  | 5.7 ns  | 0.18 ns | 186.3 M calls/s |
+| 8 | 8 000 000 | 4.3 ns  | 4.8 ns  | 0.20 ns | 234.8 M calls/s |
 
-Relative spread (stdev/mean) grows with thread count — from ~12 % at 1 thread to
-~19 % at 8 threads — so multi-threaded runs are less stable and p95 sits noticeably
-above the median.
+Under backpressure the single-thread run is the least stable (stdev ≈ 5.7 ns, p95 well
+above the median): with one producer and one worker they either keep pace or the
+producer briefly blocks on the worker's recycle rate, run to run. From 2 threads up the
+worker stays saturated and the spread collapses to a few percent.
+
+#### Metrics
+
+Run the metric benchmarks with `--gtest_filter="*c_mtk_perf*" --gtest_also_run_disabled_tests`.
+
+Single-thread emit latency (`c_mtk_perf_test`, 32 batches x 1 000 000 iterations, median ns/call):
+
+| Test | Per call | Iterations |
+|------|----------|------------|
+| `emit_single_thread` | 11.9 ns | 1 000 000 |
+
+`full_cycle` throughput (emit through the in-memory null sink), 1 000 000 iterations
+per thread, aggregated over 25 runs:
+
+| Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
+|---------|-------------|----------------|-------------|-------|---------------------|
+| 1 | 1 000 000 | 11.1 ns | 11.8 ns | 0.30 ns | 89.8 M calls/s |
+| 2 | 2 000 000 | 5.9 ns  | 6.3 ns  | 0.20 ns | 171.1 M calls/s |
+| 4 | 4 000 000 | 3.0 ns  | 3.4 ns  | 0.26 ns | 328.7 M calls/s |
+| 8 | 8 000 000 | 2.0 ns  | 2.2 ns  | 0.15 ns | 513.6 M calls/s |
 
 ### Profiling with Tracy
 

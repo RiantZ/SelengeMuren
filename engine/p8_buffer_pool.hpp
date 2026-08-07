@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 
 class cp8_memory_budget;
 
@@ -60,16 +61,61 @@ public:
     // single lock acquisition, then empties io_bufs (keeping its node pool).
     // Equivalent to calling recycle() per element but pays the mutex cost once,
     // which matters on the worker's flush path where whole batches are recycled.
+    // A recycled buffer is handed directly to the oldest waiter (if any) instead
+    // of going to the free list, so acquire_wait() acquirers are served FIFO.
     void recycle(kit::c_lst<uint8_t *> &io_bufs);
+
+    // Blocking, strict-FIFO acquire. If a buffer is available it behaves like
+    // acquire_no_lock(); otherwise the caller parks in a FIFO waiter queue and is
+    // handed the next recycled buffer directly (oldest waiter first).
+    uint8_t *acquire_wait();
+
+    // Wake every parked waiter with a nullptr result and refuse further parks.
+    // Called once at shutdown, before the worker stops. Idempotent.
+    void stop_waiters();
 
     size_t get_buffer_size() const;
     size_t get_free_count();
 
 private:
+    // One blocked acquirer. Lives on the waiting thread's stack and is linked into
+    // the FIFO queue below under mo_mutex. Hand-off publishes mp_buf then releases
+    // mo_sem; the woken thread reads only its own node, never the pool, so the pool
+    // may be destroyed while a waiter is returning.
+    struct s_waiter
+    {
+        s_waiter             *mp_next = nullptr; // intrusive FIFO link (guarded by mo_mutex)
+        uint8_t              *mp_buf  = nullptr; // handed-off buffer, or nullptr sentinel on shutdown
+        std::binary_semaphore mo_sem { 0 };      // per-waiter park; starts blocked
+    };
+
+    // Hand ip_buf to the oldest waiter if one is queued: returns true (the caller
+    // must NOT push ip_buf to mo_free), or false when there is no waiter. The
+    // caller must hold mo_mutex.
+    bool try_handoff_no_lock(uint8_t *ip_buf);
+
     size_t                             mz_buffer_size;
-    size_t                             mz_acquired = 0;
     std::shared_ptr<cp8_memory_budget> mp_budget;
     kit::c_lst<uint8_t *>              mo_free;
     kit::c_lst<uint8_t *>              mo_all;
     std::mutex                         mo_mutex;
+
+    // FIFO waiter queue for acquire_wait(). Every field is mutated only under
+    // mo_mutex. mu_wait_count is loaded relaxed on the recycle path to skip the
+    // queue when empty; it never guards the buffer hand-off (mo_sem carries that
+    // happens-before). mb_stopping latches shutdown so no new waiter parks.
+    s_waiter             *mp_wait_head = nullptr; // dequeue end (oldest waiter)
+    s_waiter             *mp_wait_tail = nullptr; // enqueue end
+    std::atomic<uint32_t> mu_wait_count { 0 };
+    bool                  mb_stopping = false;
+
+#ifdef P8_TESTING
+    // Monotonic count of enqueue events, bumped under mo_mutex at the instant a
+    // waiter joins the queue. Lets a test observe FIFO enqueue order without sleeps.
+    std::atomic<uint64_t> mu_wait_arrivals { 0 };
+
+public:
+    size_t   get_wait_count() const;
+    uint64_t get_wait_arrivals() const;
+#endif
 };

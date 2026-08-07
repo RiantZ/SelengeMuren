@@ -116,6 +116,98 @@ void cp8_buffer_pool::unlock()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint8_t *cp8_buffer_pool::acquire_wait()
+{
+    s_waiter lo_self;
+
+    mo_mutex.lock();
+
+    // Fast path: a buffer is available (grow-on-demand still fires here).
+    uint8_t *lp_buf = acquire_no_lock();
+    if(lp_buf)
+    {
+        mo_mutex.unlock();
+        return lp_buf;
+    }
+
+    // Shutting down: never park; callers treat nullptr as a drop.
+    if(mb_stopping)
+    {
+        mo_mutex.unlock();
+        return nullptr;
+    }
+
+    // Enqueue at the tail (FIFO) under the same lock that decides where a recycled
+    // buffer goes, so there is no lost-wakeup window between "saw no buffer" and "parked".
+    lo_self.mp_next = nullptr;
+    if(mp_wait_tail)
+    {
+        mp_wait_tail->mp_next = &lo_self;
+    }
+    else
+    {
+        mp_wait_head = &lo_self;
+    }
+    mp_wait_tail = &lo_self;
+    mu_wait_count.fetch_add(1, std::memory_order_relaxed);
+
+#ifdef P8_TESTING
+    mu_wait_arrivals.fetch_add(1, std::memory_order_relaxed);
+#endif
+
+    mo_mutex.unlock();
+
+    // Park until a hand-off (or shutdown) releases our semaphore. A release that
+    // landed just above is remembered by the semaphore, so acquire() returns at once.
+    lo_self.mo_sem.acquire();
+
+    // Read only our own stack node — never `this` — so a concurrent pool teardown
+    // during wake-up is safe.
+    return lo_self.mp_buf;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool cp8_buffer_pool::try_handoff_no_lock(uint8_t *ip_buf)
+{
+    if(mu_wait_count.load(std::memory_order_relaxed) == 0)
+    {
+        return false;
+    }
+
+    // Dequeue the oldest waiter (FIFO). Read mp_next and publish mp_buf BEFORE the
+    // release: once signaled, the waiter may return and destroy its stack node.
+    s_waiter *lp_waiter = mp_wait_head;
+    mp_wait_head        = lp_waiter->mp_next;
+    if(!mp_wait_head)
+    {
+        mp_wait_tail = nullptr;
+    }
+    mu_wait_count.fetch_sub(1, std::memory_order_relaxed);
+
+    lp_waiter->mp_buf = ip_buf;
+    lp_waiter->mo_sem.release();
+    return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_buffer_pool::stop_waiters()
+{
+    std::lock_guard<std::mutex> lo_guard(mo_mutex);
+
+    mb_stopping = true;
+
+    while(mp_wait_head)
+    {
+        s_waiter *lp_waiter = mp_wait_head;
+        mp_wait_head        = lp_waiter->mp_next; // read next BEFORE the release
+        lp_waiter->mp_buf   = nullptr;            // sentinel BEFORE the release
+        lp_waiter->mo_sem.release();
+    }
+    mp_wait_tail = nullptr;
+    mu_wait_count.store(0, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_buffer_pool::recycle(uint8_t *ip_buf)
 {
     if(!ip_buf)
@@ -125,9 +217,10 @@ void cp8_buffer_pool::recycle(uint8_t *ip_buf)
 
     std::lock_guard<std::mutex> lo_guard(mo_mutex);
 
-    mz_acquired -= mz_buffer_size;
-
-    mo_free.push_last(ip_buf);
+    if(!try_handoff_no_lock(ip_buf))
+    {
+        mo_free.push_last(ip_buf);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -147,8 +240,11 @@ void cp8_buffer_pool::recycle(kit::c_lst<uint8_t *> &io_bufs)
             {
                 return;
             }
-            mz_acquired -= mz_buffer_size;
-            mo_free.push_last(ip_buf);
+
+            if(!try_handoff_no_lock(ip_buf))
+            {
+                mo_free.push_last(ip_buf);
+            }
         },
         kit::e_c_lst_pool_policy::e_keep);
 }
@@ -165,3 +261,17 @@ size_t cp8_buffer_pool::get_free_count()
     std::lock_guard<std::mutex> lo_guard(mo_mutex);
     return mo_free.size();
 }
+
+#ifdef P8_TESTING
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+size_t cp8_buffer_pool::get_wait_count() const
+{
+    return mu_wait_count.load(std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint64_t cp8_buffer_pool::get_wait_arrivals() const
+{
+    return mu_wait_arrivals.load(std::memory_order_relaxed);
+}
+#endif
