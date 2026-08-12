@@ -3,12 +3,32 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <latch>
 #include <memory>
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+namespace
+{
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename t_pred> static bool spin_until(std::chrono::milliseconds i_timeout, t_pred i_pred)
+{
+    auto lo_deadline = std::chrono::steady_clock::now() + i_timeout;
+    while(std::chrono::steady_clock::now() < lo_deadline)
+    {
+        if(i_pred())
+        {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return i_pred();
+}
+} // namespace
 
 class c_p8_buffer_pool_test : public ::testing::Test
 {
@@ -480,4 +500,48 @@ TEST_F(c_p8_buffer_pool_test, concurrent_acquire_unique_pointers)
     }
 
     EXPECT_EQ(lo_unique.size(), lz_thread_count * lz_per_thread);
+}
+
+TEST_F(c_p8_buffer_pool_test, destructor_wakes_parked_waiter)
+{
+    // Destroying the pool while a producer is parked in acquire_wait() must wake it
+    // (nullptr) and drain the teardown barrier without hanging or a UAF. On the pre-fix
+    // code ~cp8_buffer_pool never wakes the waiter, so lb_returned stays false and the
+    // second spin_until below times out.
+    auto lp_budget = std::make_shared<cp8_memory_budget>(1024);
+    auto lp_pool   = std::make_unique<cp8_buffer_pool>(1024, lp_budget);
+    ASSERT_EQ(lp_pool->init(1), 1u);
+
+    // exhaust the single buffer so the next acquire must park
+    lp_pool->lock();
+    ASSERT_NE(lp_pool->acquire_no_lock(), nullptr);
+    lp_pool->unlock();
+
+    std::atomic<bool>      lb_returned { false };
+    std::atomic<uint8_t *> lp_got { reinterpret_cast<uint8_t *>(0x1) };
+
+    cp8_buffer_pool *lp_raw = lp_pool.get();
+    std::thread      lo_waiter(
+        [&lb_returned, &lp_got, lp_raw]
+        {
+            uint8_t *lp_r = lp_raw->acquire_wait();
+            lp_got.store(lp_r);
+            lb_returned.store(true, std::memory_order_release);
+        });
+
+    ASSERT_TRUE(spin_until(std::chrono::seconds(2), [&] { return lp_raw->get_wait_count() == 1; }));
+
+    lp_pool.reset(); // fixed: stop_waiters() + inflight barrier; buggy: waiter never woken -> timeout
+
+    bool lb_ok = spin_until(std::chrono::seconds(2), [&] { return lb_returned.load(std::memory_order_acquire); });
+    if(lb_ok)
+    {
+        lo_waiter.join(); // barrier guaranteed the waiter returned before reset() finished
+    }
+    else
+    {
+        lo_waiter.detach(); // buggy path hangs; don't wedge the suite
+    }
+    ASSERT_TRUE(lb_ok);
+    EXPECT_EQ(lp_got.load(), nullptr);
 }

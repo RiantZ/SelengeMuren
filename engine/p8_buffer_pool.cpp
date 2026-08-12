@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <new>
+#include <thread>
 #include <utility>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -15,6 +16,21 @@ cp8_buffer_pool::cp8_buffer_pool(size_t iz_buffer_size, std::shared_ptr<cp8_memo
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_buffer_pool::~cp8_buffer_pool()
 {
+    // Wake and refuse any still-parked waiters even if the owner never called
+    // stop_waiters() (robust to the mb_worker_running early-return in cp8_core::
+    // stop_worker). Idempotent.
+    stop_waiters();
+
+    // Teardown barrier: wait until every woken waiter has fully left acquire_wait()
+    // (unlocked mo_mutex and decremented mu_inflight) before destroying mo_mutex / the
+    // CV shards. MUST spin WITHOUT holding mo_mutex — a returning waiter needs it to
+    // leave wait(). The acquire load pairs with the waiter's release fetch_sub, so
+    // inflight==0 also implies mo_mutex is quiescent here.
+    while(mu_inflight.load(std::memory_order_acquire) != 0)
+    {
+        std::this_thread::yield();
+    }
+
     std::lock_guard<std::mutex> lo_guard(mo_mutex);
 
     size_t lz_reserved = mo_all.size() * mz_buffer_size;
@@ -120,26 +136,26 @@ uint8_t *cp8_buffer_pool::acquire_wait()
 {
     s_waiter lo_self;
 
-    mo_mutex.lock();
+    std::unique_lock<std::mutex> lo_lock(mo_mutex);
 
     // Fast path: a buffer is available (grow-on-demand still fires here).
     uint8_t *lp_buf = acquire_no_lock();
     if(lp_buf)
     {
-        mo_mutex.unlock();
         return lp_buf;
     }
 
     // Shutting down: never park; callers treat nullptr as a drop.
     if(mb_stopping)
     {
-        mo_mutex.unlock();
         return nullptr;
     }
 
     // Enqueue at the tail (FIFO) under the same lock that decides where a recycled
     // buffer goes, so there is no lost-wakeup window between "saw no buffer" and "parked".
     lo_self.mp_next = nullptr;
+    lo_self.mp_cv   = &mo_wait_cvs[mu_cv_next % mz_wait_cv_count]; // round-robin shard
+    ++mu_cv_next;
     if(mp_wait_tail)
     {
         mp_wait_tail->mp_next = &lo_self;
@@ -150,32 +166,40 @@ uint8_t *cp8_buffer_pool::acquire_wait()
     }
     mp_wait_tail = &lo_self;
     mu_wait_count.fetch_add(1, std::memory_order_relaxed);
+    mu_inflight.fetch_add(1, std::memory_order_relaxed);
 
 #ifdef P8_TESTING
     mu_wait_arrivals.fetch_add(1, std::memory_order_relaxed);
 #endif
 
-    mo_mutex.unlock();
+    // wait() atomically RELEASES lo_lock while parked and RE-ACQUIRES it on wake — the
+    // mutex is NOT held during the block, so the recycler can take mo_mutex and hand
+    // off. Holding lo_lock on ENTRY is mandatory: enqueue + wait under one continuous
+    // lock closes the lost-wakeup window. Predicate reads only our own node.
+    lo_self.mp_cv->wait(lo_lock, [&lo_self] { return lo_self.mb_done; });
 
-    // Park until a hand-off (or shutdown) releases our semaphore. A release that
-    // landed just above is remembered by the semaphore, so acquire() returns at once.
-    lo_self.mo_sem.acquire();
+    uint8_t *lp_result = lo_self.mp_buf;
 
-    // Read only our own stack node — never `this` — so a concurrent pool teardown
-    // during wake-up is safe.
-    return lo_self.mp_buf;
+    lo_lock.unlock();
+
+    // LAST pool access — MUST be after unlock(). Pairs (release) with the destructor's
+    // acquire load so mu_inflight==0 proves this waiter unlocked mo_mutex and will
+    // touch no pool memory again. Do NOT move this before unlock().
+    mu_inflight.fetch_sub(1, std::memory_order_release);
+
+    return lp_result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_buffer_pool::try_handoff_no_lock(uint8_t *ip_buf)
+int cp8_buffer_pool::try_handoff_no_lock(uint8_t *ip_buf)
 {
     if(mu_wait_count.load(std::memory_order_relaxed) == 0)
     {
-        return false;
+        return -1;
     }
 
-    // Dequeue the oldest waiter (FIFO). Read mp_next and publish mp_buf BEFORE the
-    // release: once signaled, the waiter may return and destroy its stack node.
+    // Dequeue the oldest waiter (FIFO) and mark it served; return its CV shard index so
+    // the caller notify_all()s exactly that shard.
     s_waiter *lp_waiter = mp_wait_head;
     mp_wait_head        = lp_waiter->mp_next;
     if(!mp_wait_head)
@@ -184,9 +208,10 @@ bool cp8_buffer_pool::try_handoff_no_lock(uint8_t *ip_buf)
     }
     mu_wait_count.fetch_sub(1, std::memory_order_relaxed);
 
-    lp_waiter->mp_buf = ip_buf;
-    lp_waiter->mo_sem.release();
-    return true;
+    lp_waiter->mp_buf  = ip_buf;
+    lp_waiter->mb_done = true;
+
+    return static_cast<int>(lp_waiter->mp_cv - mo_wait_cvs.data());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -194,17 +219,28 @@ void cp8_buffer_pool::stop_waiters()
 {
     std::lock_guard<std::mutex> lo_guard(mo_mutex);
 
-    mb_stopping = true;
+    mb_stopping  = true;
 
+    bool lb_woke = false;
     while(mp_wait_head)
     {
         s_waiter *lp_waiter = mp_wait_head;
-        mp_wait_head        = lp_waiter->mp_next; // read next BEFORE the release
-        lp_waiter->mp_buf   = nullptr;            // sentinel BEFORE the release
-        lp_waiter->mo_sem.release();
+        mp_wait_head        = lp_waiter->mp_next; // read next BEFORE marking done
+        lp_waiter->mp_buf   = nullptr;            // sentinel
+        lp_waiter->mb_done  = true;
+        lb_woke             = true;
     }
     mp_wait_tail = nullptr;
     mu_wait_count.store(0, std::memory_order_relaxed);
+
+    // Shutdown wakes everyone regardless of shard.
+    if(lb_woke)
+    {
+        for(std::condition_variable &lo_cv : mo_wait_cvs)
+        {
+            lo_cv.notify_all();
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -217,7 +253,12 @@ void cp8_buffer_pool::recycle(uint8_t *ip_buf)
 
     std::lock_guard<std::mutex> lo_guard(mo_mutex);
 
-    if(!try_handoff_no_lock(ip_buf))
+    const int li_idx = try_handoff_no_lock(ip_buf);
+    if(li_idx >= 0)
+    {
+        mo_wait_cvs[li_idx].notify_all();
+    }
+    else
     {
         mo_free.push_last(ip_buf);
     }
@@ -240,8 +281,12 @@ void cp8_buffer_pool::recycle(kit::c_lst<uint8_t *> &io_bufs)
             {
                 return;
             }
-
-            if(!try_handoff_no_lock(ip_buf))
+            const int li_idx = try_handoff_no_lock(ip_buf);
+            if(li_idx >= 0)
+            {
+                mo_wait_cvs[li_idx].notify_all(); // wake the served waiter's shard
+            }
+            else
             {
                 mo_free.push_last(ip_buf);
             }
