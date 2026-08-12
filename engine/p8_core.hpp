@@ -41,12 +41,14 @@ struct s_p8_mtk_desc;
 
 // Aggregated count of telemetry elements dropped before reaching the sink,
 // split by kind. Returned by cp8_core::get_dropped_stats() and by each writer's
-// pull_dropped().
+// pull_dropped(). mu_svc counts service/metadata descriptors dropped on buffer
+// exhaustion (core-side only; writers never populate it).
 struct s_p8_drop_stats
 {
     uint64_t mu_logs;
     uint64_t mu_metrics;
     uint64_t mu_traces;
+    uint64_t mu_svc;
 };
 
 struct s_p8_attr_desc
@@ -227,6 +229,7 @@ private:
     std::atomic<uint64_t> mu_dropped_logs { 0 };
     std::atomic<uint64_t> mu_dropped_metrics { 0 };
     std::atomic<uint64_t> mu_dropped_traces { 0 };
+    std::atomic<uint64_t> mu_dropped_svc { 0 };
 
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;

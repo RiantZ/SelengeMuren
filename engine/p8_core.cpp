@@ -1205,7 +1205,7 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::poll_dropped_stats()
 {
-    s_p8_drop_stats lo_sum { 0, 0, 0 };
+    s_p8_drop_stats lo_sum { 0, 0, 0, 0 };
 
     {
         std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
@@ -1236,6 +1236,7 @@ s_p8_drop_stats cp8_core::get_dropped_stats() const
     lo_stats.mu_logs    = mu_dropped_logs.load(std::memory_order_relaxed);
     lo_stats.mu_metrics = mu_dropped_metrics.load(std::memory_order_relaxed);
     lo_stats.mu_traces  = mu_dropped_traces.load(std::memory_order_relaxed);
+    lo_stats.mu_svc     = mu_dropped_svc.load(std::memory_order_relaxed);
     return lo_stats;
 }
 
@@ -1282,13 +1283,20 @@ size_t cp8_core::get_buffer_size()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 s_p8_svc_buf *cp8_core::svc_acquire_new()
 {
-    // Non-blocking on purpose: this runs on the worker thread, which is the sole
-    // recycler of buffers. Blocking here would wait for a buffer only the worker
-    // itself can free — an immediate self-deadlock. On exhaustion we skip instead.
+    // Non-blocking on purpose. This runs on a client registration thread while
+    // holding mo_svc_mutex (every serialize_* caller takes it). The worker is the
+    // sole recycler of buffers, and it must acquire mo_svc_mutex at the top of its
+    // drain cycle before it can recycle anything. A blocking acquire_buffer(true)
+    // would park here still holding mo_svc_mutex, so the worker would stall on that
+    // same lock and never free a buffer — a lock-ordering deadlock. On exhaustion
+    // we skip instead.
     uint8_t *lp_buf = acquire_buffer(false);
     if(!lp_buf)
     {
-        // TODO: print error
+        if(mu_dropped_svc.fetch_add(1, std::memory_order_relaxed) == 0)
+        {
+            std::fprintf(stderr, "cp8_core::svc_acquire_new: buffer pool exhausted, dropping service entries\n");
+        }
         return nullptr;
     }
 
@@ -1302,6 +1310,7 @@ s_p8_svc_buf *cp8_core::svc_acquire_new()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// TODO: (Lau) Function might return nullptr (svc_acquire_new), need to be handled here or in callers
 uint8_t *cp8_core::svc_reserve(size_t iz_padded)
 {
     const size_t lz_capacity = get_buffer_size();
@@ -1946,7 +1955,7 @@ cp8_tls_writer *p8_test_get_writers_head()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 s_p8_drop_stats p8_test_get_dropped_stats()
 {
-    return gp_instance ? gp_instance->get_dropped_stats() : s_p8_drop_stats { 0, 0, 0 };
+    return gp_instance ? gp_instance->get_dropped_stats() : s_p8_drop_stats { 0, 0, 0, 0 };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

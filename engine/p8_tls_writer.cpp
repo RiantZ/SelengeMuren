@@ -162,6 +162,7 @@ s_p8_drop_stats cp8_tls_writer::pull_dropped()
     lo_stats.mu_logs    = mu_dropped_logs.exchange(0, std::memory_order_relaxed);
     lo_stats.mu_metrics = mu_dropped_metrics.exchange(0, std::memory_order_relaxed);
     lo_stats.mu_traces  = mu_dropped_traces.exchange(0, std::memory_order_relaxed);
+    lo_stats.mu_svc     = 0; // writers never emit service descriptors
     return lo_stats;
 }
 
