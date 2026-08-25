@@ -120,8 +120,8 @@ protected:
     {
         struct s_p8_config lo_config = {};
         lo_config.mp_json_config     = "{"
-                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"16MB\","
-                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"16MB\""
+                                       "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
+                                       "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\""
                                        "}";
 
         ASSERT_TRUE(p8_initialize(&lo_config));
@@ -254,8 +254,8 @@ TEST_P(c_mtk_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
     struct s_p8_config lo_config = {};
     lo_config.mp_json_config     = "{"
                                    "\"" P8_CFG_KEY_SINK "\": \"" P8_CFG_VAL_SINK_NETWORK_NULL "\","
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"32MB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"32MB\""
+                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
+                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\""
                                    "}";
 
     ASSERT_TRUE(p8_initialize(&lo_config));
