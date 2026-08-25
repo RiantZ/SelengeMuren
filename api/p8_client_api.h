@@ -285,7 +285,7 @@ extern "C"
                      const char                 *ip_format,
                      ...);
 
-    /// @brief Function for internal usage, please use macros P8TRC, P8DBG, etc. instead.
+    /// @brief Function for embedding into another logger
     /// @param ie_level [in] log level
     /// @param ip_module [in] module
     /// @param iu_trace_id [in] distributed trace identifier that correlates this log record; pass 0 when
@@ -349,6 +349,25 @@ extern "C"
                           const struct s_p8_attr_val *ip_attrs,
                           const char                 *ip_function_args,
                           ...);
+
+    /// @brief Start a trace span, designed to be embedded into existing function with variable arguments
+    /// @param iu_parent_trace_id [in] parent span ID for nested traces; pass 0 for a root span
+    /// @param iu_line            [in] source code line index
+    /// @param ip_file            [in] source code file name
+    /// @param ip_function        [in] source code function name
+    /// @param iz_attrs           [in] number of elements in ip_attrs; pass 0 when no attributes
+    /// @param ip_attrs           [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
+    /// @param ip_function_args   [in] printf-style format string describing call arguments; may be nullptr
+    /// @param ip_va_list         [in] variable arguments list
+    /// @return assigned trace ID (non-zero on success, 0 on failure)
+    uint64_t p8_trc_begin_emb(uint64_t                    iu_parent_trace_id,
+                              uint32_t                    iu_line,
+                              const char                 *ip_file,
+                              const char                 *ip_function,
+                              size_t                      iz_attrs,
+                              const struct s_p8_attr_val *ip_attrs,
+                              const char                 *ip_function_args,
+                              va_list                    *ip_va_list);
 
     /// @brief End a trace span. For internal usage — prefer P8TRC_SCOPE macro (RAII) or P8TRC_END.
     /// @param iu_trace_id [in] trace ID returned by p8_trc_begin; passing 0 is a no-op
