@@ -173,6 +173,10 @@ private:
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
 
+    // One cycle's data batch: drain_writers, then the ready queue. Shared by the worker and
+    // p8_test_drain_writers so both keep the same order.
+    void collect_batch(kit::c_lst<uint8_t *> &io_data);
+
     // Pull-and-reset every registered writer's drop counters and fold them into
     // the core accumulators. Runs on the worker's P8_CORE_STATS_POLL_INTERVAL_MS
     // cadence. Takes mo_writers_lock; the per-writer pull is lock-free.

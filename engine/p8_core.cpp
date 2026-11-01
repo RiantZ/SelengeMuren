@@ -496,8 +496,10 @@ void cp8_core::worker_main()
 
         if(!lb_skip)
         {
-            // move buffers from list protected by mutex to local one
+            // this cycle's data from live writers and from writers that exited
+            collect_batch(lo_ready);
 
+            // after the whole batch is collected, so descriptors used by it are sent before its data
             mo_svc_mutex.lock();
             while(mo_svc_buffers.size())
             {
@@ -514,18 +516,6 @@ void cp8_core::worker_main()
             // recycle the consumed service buffers back to the pool
             lo_bufs.clear([this](const s_p8_svc_buf &ir_pair) { release_buffer(ir_pair.mp_buf); },
                           kit::e_c_lst_pool_policy::e_keep);
-
-            // move buffers from the ready queue (writer-shutdown path) to local one
-            mo_ready_lock.lock();
-            while(mo_ready_queue.size() > 0)
-            {
-                lo_ready.push_last(mo_ready_queue.pull_first());
-            }
-            mo_ready_lock.unlock();
-            //--------------------------------------------------------
-
-            // pull accumulated buffers from every live writer into the same batch
-            drain_writers(lo_ready);
 
             // On the stats cadence, pull-and-reset every writer's drop counters
             // into the core accumulators.
@@ -1203,6 +1193,20 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
+{
+    drain_writers(io_data);
+
+    // after the drain, so a writer that exits during it still lands in this batch
+    mo_ready_lock.lock();
+    while(mo_ready_queue.size() > 0)
+    {
+        io_data.push_last(mo_ready_queue.pull_first());
+    }
+    mo_ready_lock.unlock();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_core::poll_dropped_stats()
 {
     s_p8_drop_stats lo_sum { 0, 0, 0, 0 };
@@ -1283,13 +1287,8 @@ size_t cp8_core::get_buffer_size()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 s_p8_svc_buf *cp8_core::svc_acquire_new()
 {
-    // Non-blocking on purpose. This runs on a client registration thread while
-    // holding mo_svc_mutex (every serialize_* caller takes it). The worker is the
-    // sole recycler of buffers, and it must acquire mo_svc_mutex at the top of its
-    // drain cycle before it can recycle anything. A blocking acquire_buffer(true)
-    // would park here still holding mo_svc_mutex, so the worker would stall on that
-    // same lock and never free a buffer — a lock-ordering deadlock. On exhaustion
-    // we skip instead.
+    // Non-blocking: the caller holds mo_svc_mutex, which the worker needs before it
+    // recycles any buffer, so waiting here would deadlock. On exhaustion we skip.
     uint8_t *lp_buf = acquire_buffer(false);
     if(!lp_buf)
     {
@@ -1994,15 +1993,7 @@ void p8_test_drain_writers()
 
     kit::c_lst<uint8_t *> lo_ready;
 
-    // include the writer-shutdown ready queue so the drain is exhaustive
-    gp_instance->mo_ready_lock.lock();
-    while(gp_instance->mo_ready_queue.size() > 0)
-    {
-        lo_ready.push_last(gp_instance->mo_ready_queue.pull_first());
-    }
-    gp_instance->mo_ready_lock.unlock();
-
-    gp_instance->drain_writers(lo_ready);
+    gp_instance->collect_batch(lo_ready);
     gp_instance->flush_ready(lo_ready);
 }
 

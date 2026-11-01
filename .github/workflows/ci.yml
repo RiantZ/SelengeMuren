@@ -21,7 +21,7 @@ jobs:
             os: ubuntu-24.04
             build_dir: _Build_lnx
           - name: macos
-            os: macos-14
+            os: macos-26
             build_dir: _Build_mac
           - name: windows
             os: windows-2022

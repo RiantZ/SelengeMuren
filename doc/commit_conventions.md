@@ -10,6 +10,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org)
 
 - `(scope)` is optional, usually a module or component name
 - description starts with a lowercase letter, no period at the end, imperative mood ("add", not "added")
+- keep it short, like a code comment: the subject line only; add a body only when the subject cannot say it, one or two lines
 
 ## Types
 
