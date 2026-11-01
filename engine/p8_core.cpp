@@ -496,19 +496,10 @@ void cp8_core::worker_main()
 
         if(!lb_skip)
         {
-            // move buffers from the ready queue (writer-shutdown path) to local one
-            mo_ready_lock.lock();
-            while(mo_ready_queue.size() > 0)
-            {
-                lo_ready.push_last(mo_ready_queue.pull_first());
-            }
-            mo_ready_lock.unlock();
-            //--------------------------------------------------------
+            // this cycle's data from live writers and from writers that exited
+            collect_batch(lo_ready);
 
-            // pull accumulated buffers from every live writer into the same batch
-            drain_writers(lo_ready);
-
-            // after the drain, so descriptors used by this batch are sent before its data
+            // after the whole batch is collected, so descriptors used by it are sent before its data
             mo_svc_mutex.lock();
             while(mo_svc_buffers.size())
             {
@@ -1199,6 +1190,20 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 
     // Plot the drained buffer count on function exit. No-op without *-tracy.
     P8_PROF_PLOT("drain_writers io_data.size", static_cast<int64_t>(io_data.size()));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
+{
+    drain_writers(io_data);
+
+    // after the drain, so a writer that exits during it still lands in this batch
+    mo_ready_lock.lock();
+    while(mo_ready_queue.size() > 0)
+    {
+        io_data.push_last(mo_ready_queue.pull_first());
+    }
+    mo_ready_lock.unlock();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1988,15 +1993,7 @@ void p8_test_drain_writers()
 
     kit::c_lst<uint8_t *> lo_ready;
 
-    // include the writer-shutdown ready queue so the drain is exhaustive
-    gp_instance->mo_ready_lock.lock();
-    while(gp_instance->mo_ready_queue.size() > 0)
-    {
-        lo_ready.push_last(gp_instance->mo_ready_queue.pull_first());
-    }
-    gp_instance->mo_ready_lock.unlock();
-
-    gp_instance->drain_writers(lo_ready);
+    gp_instance->collect_batch(lo_ready);
     gp_instance->flush_ready(lo_ready);
 }
 
