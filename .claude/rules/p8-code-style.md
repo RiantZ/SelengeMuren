@@ -18,6 +18,7 @@ Full reference: `doc/code_style.md`. Defaults are non-negotiable unless the user
 4. C functions are prefixed with the module name (e.g. `p8_`). C++ class methods start with a verb (`do_`, `get_`, `set_`, `is_`, `create_`, ...).
 5. Format with the repo's `.clang-format` before finishing.
 6. Every function **definition** in `.c` / `.cpp` files is preceded by a separator line of 120 `/` characters.
+7. Comments are short and plain: one line by default, two at most. See [Comments](#comments).
 
 ## File Naming
 
@@ -116,6 +117,21 @@ static constexpr uint32_t lu_max_channels = 64;   // OK — constexpr
 static constexpr uint32_t LU_MAX_CHANNELS = 64;   // WRONG — not a #define
 ```
 
+## Comments
+
+A person reads every comment and has no time for long or tangled text.
+
+- One short line by default, two at most. Plain words, no essays.
+- Say why the code is there, not how it works step by step or what the old code did.
+- Longer reasoning goes to `doc/`, not into the code.
+
+```cpp
+// after the drain, so descriptors used by this batch are sent before its data   // OK
+
+// Service buffers are collected only once the data batch is complete: a          // WRONG — an essay
+// writer queues a descriptor before it writes the first record that ...
+```
+
 ## Canonical Example
 
 ```cpp
@@ -166,6 +182,7 @@ void my_function(c_my_class *&or_object)
 - [ ] No invented type prefixes — only those listed in the Type Prefixes table.
 - [ ] `static constexpr` / `const` use lowercase with prefixes, not ALL_CAPS.
 - [ ] Every function definition in `.c` / `.cpp` is preceded by a 120-char `///...` separator.
+- [ ] Comments are short and plain: one line by default, two at most.
 - [ ] Code is formatted with the project `.clang-format`.
 
 ## When in Doubt
