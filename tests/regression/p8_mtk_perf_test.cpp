@@ -9,7 +9,9 @@
 #include <cmath>
 #include <cstdio>
 #include <latch>
+#include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -238,7 +240,7 @@ void report_throughput(const char *ip_label, uint32_t iu_thread_count, uint64_t 
 
 static const uint32_t ga_perf_thread_counts[] = { 1, 2, 4, 8 };
 
-class c_mtk_perf_null_sink_full_cycle_test : public ::testing::TestWithParam<uint32_t>
+class c_mtk_perf_null_sink_full_cycle_test : public ::testing::TestWithParam<std::tuple<uint32_t, bool>>
 {
 protected:
     void TearDown() override
@@ -249,14 +251,18 @@ protected:
 
 TEST_P(c_mtk_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 {
-    const uint32_t lu_threads    = GetParam();
+    const uint32_t lu_threads     = std::get<0>(GetParam());
+    const bool     lb_sort        = std::get<1>(GetParam());
 
-    struct s_p8_config lo_config = {};
-    lo_config.mp_json_config     = "{"
-                                   "\"" P8_CFG_KEY_SINK "\": \"" P8_CFG_VAL_SINK_NETWORK_NULL "\","
-                                   "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
-                                   "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\""
-                                   "}";
+    // sort_batches is the only difference between the paired runs
+    std::string ls_config         = "{\"" P8_CFG_KEY_SINK "\": \"" P8_CFG_VAL_SINK_NETWORK_NULL "\","
+                                    "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"4MB\","
+                                    "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"4MB\","
+                                    "\"" P8_CFG_KEY_SORT_BATCHES "\": ";
+    ls_config                    += lb_sort ? "true}" : "false}";
+
+    struct s_p8_config lo_config  = {};
+    lo_config.mp_json_config      = ls_config.c_str();
 
     ASSERT_TRUE(p8_initialize(&lo_config));
 
@@ -268,7 +274,7 @@ TEST_P(c_mtk_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 
     p8_release();
 
-    report_throughput("full_cycle emit (null sink)",
+    report_throughput(lb_sort ? "full_cycle emit (null sink), sort on" : "full_cycle emit (null sink), sort off",
                       lu_threads,
                       static_cast<uint64_t>(lu_threads) * lu_perf_iters_per_thread,
                       lo_stats.md_emit_ns);
@@ -277,4 +283,9 @@ TEST_P(c_mtk_perf_null_sink_full_cycle_test, DISABLED_full_cycle)
 
 INSTANTIATE_TEST_SUITE_P(ThreadCounts,
                          c_mtk_perf_null_sink_full_cycle_test,
-                         ::testing::ValuesIn(ga_perf_thread_counts));
+                         ::testing::Combine(::testing::ValuesIn(ga_perf_thread_counts), ::testing::Bool()),
+                         [](const ::testing::TestParamInfo<std::tuple<uint32_t, bool>> &ir_info)
+                         {
+                             return "t" + std::to_string(std::get<0>(ir_info.param))
+                                    + (std::get<1>(ir_info.param) ? "_sort" : "_nosort");
+                         });
