@@ -12,7 +12,7 @@ class cp8_sink_null final : public cp8_sink_iface
 public:
     bool open() override;
     bool write_hello(const struct s_p8_hdr &ir_hdr) override;
-    bool write_data(const kit::c_lst<uint8_t *> &ip_buffers) override;
+    bool write_data(const struct s_p8_batch &ir_batch, const kit::c_lst<uint8_t *> &ip_buffers) override;
     bool write_service(const kit::c_lst<s_p8_svc_buf> &ip_buffers) override;
     void flush() override;
     void close() override;

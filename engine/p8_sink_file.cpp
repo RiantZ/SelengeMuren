@@ -226,17 +226,14 @@ bool cp8_sink_file::write_entries(kit::c_file        &ir_file,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_sink_file::write_data(const kit::c_lst<uint8_t *> &ip_buffers)
+bool cp8_sink_file::write_data(const struct s_p8_batch &ir_batch, const kit::c_lst<uint8_t *> &ip_buffers)
 {
-    const size_t lz_count = ip_buffers.size();
-    if(lz_count == 0)
-    {
-        return true;
-    }
+    // the packet is the first entry, so it is written with its buffers or dropped with them
+    const size_t lz_count = ip_buffers.size() + 1;
 
     if(!grow_iov(lz_count))
     {
-        size_t lz_total = 0;
+        size_t lz_total = sizeof(ir_batch);
         for(const auto &lp_buf : ip_buffers)
         {
             lz_total += reinterpret_cast<const s_p8_data_buf_hdr *>(lp_buf)->mu_size;
@@ -245,7 +242,11 @@ bool cp8_sink_file::write_data(const kit::c_lst<uint8_t *> &ip_buffers)
     }
 
     kit::s_iovec *lp_iov   = mp_iov;
-    size_t        lz_total = 0;
+    size_t        lz_total = sizeof(ir_batch);
+
+    lp_iov->mp_data        = const_cast<struct s_p8_batch *>(&ir_batch);
+    lp_iov->mz_size        = sizeof(ir_batch);
+    ++lp_iov;
 
     for(const auto &lp_buf : ip_buffers)
     {

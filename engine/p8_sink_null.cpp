@@ -20,8 +20,9 @@ bool cp8_sink_null::write_hello(const struct s_p8_hdr &ir_hdr)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_sink_null::write_data(const kit::c_lst<uint8_t *> &ip_buffers)
+bool cp8_sink_null::write_data(const struct s_p8_batch &ir_batch, const kit::c_lst<uint8_t *> &ip_buffers)
 {
+    mu_total += sizeof(ir_batch);
     for(const auto &it : ip_buffers)
     {
         const s_p8_data_buf_hdr *lp_hdr  = reinterpret_cast<const s_p8_data_buf_hdr *>(it);

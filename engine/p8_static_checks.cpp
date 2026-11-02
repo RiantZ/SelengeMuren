@@ -16,6 +16,7 @@
 P8_ASSERT_PACKET_TYPE_FIRST(s_p8_hdr);
 P8_ASSERT_PACKET_TYPE_FIRST(s_p8_svc_hdr);
 P8_ASSERT_PACKET_TYPE_FIRST(s_p8_data_buf_hdr);
+P8_ASSERT_PACKET_TYPE_FIRST(s_p8_batch);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Protocol structures must be 8-byte aligned so that uint64_t members can be accessed without unaligned loads when
@@ -24,12 +25,14 @@ P8_ASSERT_PACKET_TYPE_FIRST(s_p8_data_buf_hdr);
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static_assert(sizeof(struct s_p8_hdr) % 8 == 0, "s_p8_hdr size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_data_buf_hdr) % 8 == 0, "s_p8_data_buf_hdr size must be a multiple of 8 bytes");
+static_assert(sizeof(struct s_p8_batch) % 8 == 0, "s_p8_batch size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_log_item_dat) % 8 == 0, "s_p8_log_item_hdr size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_mtk_svc) % 8 == 0, "s_p8_mtk_svc size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_mtk_item_dat) % 8 == 0, "s_p8_mtk_item_dat size must be a multiple of 8 bytes");
 
 static_assert(alignof(struct s_p8_hdr) >= 8, "s_p8_hdr must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_data_buf_hdr) >= 8, "s_p8_data_buf_hdr must have at least 8-byte alignment");
+static_assert(alignof(struct s_p8_batch) >= 8, "s_p8_batch must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_log_item_dat) >= 8, "s_p8_log_item_hdr must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_mtk_svc) >= 8, "s_p8_mtk_svc must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_mtk_item_dat) >= 8, "s_p8_mtk_item_dat must have at least 8-byte alignment");
@@ -48,7 +51,7 @@ static_assert(sizeof(struct s_p8_hdr) == 568, "s_p8_hdr wire size changed");
 static_assert(offsetof(struct s_p8_hdr, mu_packet_type) == 0, "s_p8_hdr::mu_packet_type offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_protocol_version) == 1, "s_p8_hdr::mu_protocol_version offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_is_big_endian) == 2, "s_p8_hdr::mu_is_big_endian offset changed");
-static_assert(offsetof(struct s_p8_hdr, mu_padding) == 3, "s_p8_hdr::mu_padding offset changed");
+static_assert(offsetof(struct s_p8_hdr, mu_flags) == 3, "s_p8_hdr::mu_flags offset changed");
 static_assert(offsetof(struct s_p8_hdr, mi_utc_sec_offset) == 4, "s_p8_hdr::mi_utc_sec_offset offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_size) == 8, "s_p8_hdr::mu_size offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_process_id) == 12, "s_p8_hdr::mu_process_id offset changed");
@@ -77,6 +80,13 @@ static_assert(offsetof(struct s_p8_data_buf_hdr, mu_start_time) == 8,
               "s_p8_data_buf_hdr::mu_start_time offset changed");
 static_assert(offsetof(struct s_p8_data_buf_hdr, mu_stop_time) == 16,
               "s_p8_data_buf_hdr::mu_stop_time offset changed");
+
+// s_p8_batch
+static_assert(sizeof(struct s_p8_batch) == 16, "s_p8_batch wire size changed");
+static_assert(offsetof(struct s_p8_batch, mu_padding) == 1, "s_p8_batch::mu_padding offset changed");
+static_assert(offsetof(struct s_p8_batch, mu_batch) == 2, "s_p8_batch::mu_batch offset changed");
+static_assert(offsetof(struct s_p8_batch, mu_count) == 4, "s_p8_batch::mu_count offset changed");
+static_assert(offsetof(struct s_p8_batch, mu_timestamp) == 8, "s_p8_batch::mu_timestamp offset changed");
 
 // s_p8_log_varg
 static_assert(sizeof(struct s_p8_log_varg) == 2, "s_p8_log_varg wire size changed");

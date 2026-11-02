@@ -1,4 +1,5 @@
 #include "p8_sink_file.hpp"
+#include "p8_client_api.h"
 #include "p8_config_keys.hpp"
 #include "p8_protocol.h"
 
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -73,6 +75,15 @@ std::vector<uint8_t> make_data_buffer(const std::vector<uint8_t> &ir_payload)
         std::memcpy(lo_buf.data() + sizeof(lo_hdr), ir_payload.data(), ir_payload.size());
     }
     return lo_buf;
+}
+
+/// @brief Batch packet announcing iu_count data buffers, as the core sends it.
+s_p8_batch make_batch(uint32_t iu_count)
+{
+    s_p8_batch lo_batch     = {};
+    lo_batch.mu_packet_type = P8_PACKET_BATCH;
+    lo_batch.mu_count       = iu_count;
+    return lo_batch;
 }
 
 } // namespace
@@ -169,22 +180,24 @@ TEST_F(c_p8_sink_file_test, write_data_persists_full_entry_including_header)
     cp8_sink_file lo_sink(make_config(mo_tmp_dir));
     ASSERT_TRUE(lo_sink.open());
 
-    const auto lo_entry_bytes = make_data_buffer({ 'h', 'e', 'l', 'l', 'o' });
+    const auto       lo_entry_bytes = make_data_buffer({ 'h', 'e', 'l', 'l', 'o' });
+    const s_p8_batch lo_batch       = make_batch(1);
 
     kit::c_lst<uint8_t *> lo_bufs;
     lo_bufs.push_last(const_cast<uint8_t *>(lo_entry_bytes.data()));
 
-    EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+    EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
     lo_sink.close();
 
     const auto lo_path = find_file_with_ext(mo_tmp_dir, ".p8dat");
     ASSERT_FALSE(lo_path.empty());
     const auto lo_content = read_file_bytes(lo_path);
-    ASSERT_EQ(lo_content.size(), lo_entry_bytes.size());
-    EXPECT_EQ(0, std::memcmp(lo_content.data(), lo_entry_bytes.data(), lo_entry_bytes.size()));
+    ASSERT_EQ(lo_content.size(), sizeof(lo_batch) + lo_entry_bytes.size());
+    EXPECT_EQ(0, std::memcmp(lo_content.data(), &lo_batch, sizeof(lo_batch)));
+    EXPECT_EQ(0, std::memcmp(lo_content.data() + sizeof(lo_batch), lo_entry_bytes.data(), lo_entry_bytes.size()));
 
 #ifdef P8_TESTING
-    EXPECT_EQ(lo_sink.get_bytes_written(), lo_entry_bytes.size());
+    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_batch) + lo_entry_bytes.size());
 #endif
 }
 
@@ -201,21 +214,26 @@ TEST_F(c_p8_sink_file_test, write_hello_persists_header_as_first_bytes_of_data_f
     EXPECT_TRUE(lo_sink.write_hello(lo_hdr));
 
     const auto            lo_entry_bytes = make_data_buffer({ 'z' });
+    const s_p8_batch      lo_batch       = make_batch(1);
     kit::c_lst<uint8_t *> lo_bufs;
     lo_bufs.push_last(const_cast<uint8_t *>(lo_entry_bytes.data()));
-    EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+    EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
 
     lo_sink.close();
 
     const auto lo_path = find_file_with_ext(mo_tmp_dir, ".p8dat");
     ASSERT_FALSE(lo_path.empty());
     const auto lo_content = read_file_bytes(lo_path);
-    ASSERT_EQ(lo_content.size(), sizeof(lo_hdr) + lo_entry_bytes.size());
+    ASSERT_EQ(lo_content.size(), sizeof(lo_hdr) + sizeof(lo_batch) + lo_entry_bytes.size());
     EXPECT_EQ(0, std::memcmp(lo_content.data(), &lo_hdr, sizeof(lo_hdr)));
-    EXPECT_EQ(0, std::memcmp(lo_content.data() + sizeof(lo_hdr), lo_entry_bytes.data(), lo_entry_bytes.size()));
+    EXPECT_EQ(0, std::memcmp(lo_content.data() + sizeof(lo_hdr), &lo_batch, sizeof(lo_batch)));
+    EXPECT_EQ(0,
+              std::memcmp(lo_content.data() + sizeof(lo_hdr) + sizeof(lo_batch),
+                          lo_entry_bytes.data(),
+                          lo_entry_bytes.size()));
 
 #ifdef P8_TESTING
-    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_hdr) + lo_entry_bytes.size());
+    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_hdr) + sizeof(lo_batch) + lo_entry_bytes.size());
     EXPECT_EQ(lo_sink.get_write_error_count(), 0u);
 #endif
 }
@@ -225,23 +243,26 @@ TEST_F(c_p8_sink_file_test, multiple_entries_in_one_write_data_call_preserve_ord
     cp8_sink_file lo_sink(make_config(mo_tmp_dir));
     ASSERT_TRUE(lo_sink.open());
 
-    const auto lo_e1 = make_data_buffer({ 'a', 'a' });
-    const auto lo_e2 = make_data_buffer({ 'b', 'b', 'b' });
-    const auto lo_e3 = make_data_buffer({ 'c' });
+    const auto       lo_e1    = make_data_buffer({ 'a', 'a' });
+    const auto       lo_e2    = make_data_buffer({ 'b', 'b', 'b' });
+    const auto       lo_e3    = make_data_buffer({ 'c' });
+    const s_p8_batch lo_batch = make_batch(3);
 
     kit::c_lst<uint8_t *> lo_bufs;
     lo_bufs.push_last(const_cast<uint8_t *>(lo_e1.data()));
     lo_bufs.push_last(const_cast<uint8_t *>(lo_e2.data()));
     lo_bufs.push_last(const_cast<uint8_t *>(lo_e3.data()));
 
-    EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+    EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
     lo_sink.close();
 
     const auto lo_path    = find_file_with_ext(mo_tmp_dir, ".p8dat");
     const auto lo_content = read_file_bytes(lo_path);
-    ASSERT_EQ(lo_content.size(), lo_e1.size() + lo_e2.size() + lo_e3.size());
+    ASSERT_EQ(lo_content.size(), sizeof(lo_batch) + lo_e1.size() + lo_e2.size() + lo_e3.size());
 
     size_t lz_off = 0;
+    EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, &lo_batch, sizeof(lo_batch)));
+    lz_off += sizeof(lo_batch);
     EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_e1.data(), lo_e1.size()));
     lz_off += lo_e1.size();
     EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_e2.data(), lo_e2.size()));
@@ -249,7 +270,7 @@ TEST_F(c_p8_sink_file_test, multiple_entries_in_one_write_data_call_preserve_ord
     EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_e3.data(), lo_e3.size()));
 
 #ifdef P8_TESTING
-    EXPECT_EQ(lo_sink.get_bytes_written(), lo_e1.size() + lo_e2.size() + lo_e3.size());
+    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_batch) + lo_e1.size() + lo_e2.size() + lo_e3.size());
     EXPECT_EQ(lo_sink.get_write_error_count(), 0u);
 #endif
 }
@@ -303,14 +324,16 @@ TEST_F(c_p8_sink_file_test, write_data_batch_larger_than_iov_max_is_fully_persis
         lo_bufs.push_last(lo_entry.data());
     }
 
-    EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+    const s_p8_batch lo_batch = make_batch(static_cast<uint32_t>(lz_entry_count));
+    EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
     lo_sink.close();
 
     const auto lo_path    = find_file_with_ext(mo_tmp_dir, ".p8dat");
     const auto lo_content = read_file_bytes(lo_path);
-    ASSERT_EQ(lo_content.size(), lz_total_size);
+    ASSERT_EQ(lo_content.size(), sizeof(lo_batch) + lz_total_size);
+    EXPECT_EQ(0, std::memcmp(lo_content.data(), &lo_batch, sizeof(lo_batch)));
 
-    size_t lz_off = 0;
+    size_t lz_off = sizeof(lo_batch);
     for(const auto &lo_entry : lo_entries)
     {
         ASSERT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_entry.data(), lo_entry.size()));
@@ -318,7 +341,7 @@ TEST_F(c_p8_sink_file_test, write_data_batch_larger_than_iov_max_is_fully_persis
     }
 
 #ifdef P8_TESTING
-    EXPECT_EQ(lo_sink.get_bytes_written(), lz_total_size);
+    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_batch) + lz_total_size);
     EXPECT_EQ(lo_sink.get_bytes_dropped(), 0u);
     EXPECT_EQ(lo_sink.get_write_error_count(), 0u);
 #endif
@@ -329,27 +352,31 @@ TEST_F(c_p8_sink_file_test, multiple_write_data_calls_append)
     cp8_sink_file lo_sink(make_config(mo_tmp_dir));
     ASSERT_TRUE(lo_sink.open());
 
-    const auto lo_first  = make_data_buffer({ 'a', 'b', 'c' });
-    const auto lo_second = make_data_buffer({ 'x', 'y' });
+    const auto       lo_first  = make_data_buffer({ 'a', 'b', 'c' });
+    const auto       lo_second = make_data_buffer({ 'x', 'y' });
+    const s_p8_batch lo_batch  = make_batch(1);
 
     {
         kit::c_lst<uint8_t *> lo_bufs;
         lo_bufs.push_last(const_cast<uint8_t *>(lo_first.data()));
-        EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+        EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
     }
     lo_sink.flush();
     {
         kit::c_lst<uint8_t *> lo_bufs;
         lo_bufs.push_last(const_cast<uint8_t *>(lo_second.data()));
-        EXPECT_TRUE(lo_sink.write_data(lo_bufs));
+        EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_bufs));
     }
     lo_sink.close();
 
     const auto lo_path    = find_file_with_ext(mo_tmp_dir, ".p8dat");
     const auto lo_content = read_file_bytes(lo_path);
-    ASSERT_EQ(lo_content.size(), lo_first.size() + lo_second.size());
-    EXPECT_EQ(0, std::memcmp(lo_content.data(), lo_first.data(), lo_first.size()));
-    EXPECT_EQ(0, std::memcmp(lo_content.data() + lo_first.size(), lo_second.data(), lo_second.size()));
+    ASSERT_EQ(lo_content.size(), 2 * sizeof(lo_batch) + lo_first.size() + lo_second.size());
+
+    size_t lz_off = sizeof(lo_batch);
+    EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_first.data(), lo_first.size()));
+    lz_off += lo_first.size() + sizeof(lo_batch);
+    EXPECT_EQ(0, std::memcmp(lo_content.data() + lz_off, lo_second.data(), lo_second.size()));
 }
 
 TEST_F(c_p8_sink_file_test, flush_before_open_does_not_crash)
@@ -372,14 +399,15 @@ TEST_F(c_p8_sink_file_test, write_before_open_counts_as_dropped)
     // deliberately not calling open()
 
     const auto            lo_entry = make_data_buffer({ '1', '2', '3' });
+    const s_p8_batch      lo_batch = make_batch(1);
     kit::c_lst<uint8_t *> lo_bufs;
     lo_bufs.push_last(const_cast<uint8_t *>(lo_entry.data()));
 
-    lo_sink.write_data(lo_bufs);
+    lo_sink.write_data(lo_batch, lo_bufs);
 
 #ifdef P8_TESTING
     EXPECT_EQ(lo_sink.get_bytes_written(), 0u);
-    EXPECT_EQ(lo_sink.get_bytes_dropped(), lo_entry.size());
+    EXPECT_EQ(lo_sink.get_bytes_dropped(), sizeof(lo_batch) + lo_entry.size());
     EXPECT_EQ(lo_sink.get_write_error_count(), 1u);
 #endif
 }
@@ -391,26 +419,24 @@ TEST_F(c_p8_sink_file_test, write_after_close_counts_as_dropped)
     lo_sink.close();
 
     const auto            lo_entry = make_data_buffer({ '4', '5' });
+    const s_p8_batch      lo_batch = make_batch(1);
     kit::c_lst<uint8_t *> lo_bufs;
     lo_bufs.push_last(const_cast<uint8_t *>(lo_entry.data()));
 
-    lo_sink.write_data(lo_bufs);
+    lo_sink.write_data(lo_batch, lo_bufs);
 
 #ifdef P8_TESTING
-    EXPECT_EQ(lo_sink.get_bytes_dropped(), lo_entry.size());
+    EXPECT_EQ(lo_sink.get_bytes_dropped(), sizeof(lo_batch) + lo_entry.size());
     EXPECT_EQ(lo_sink.get_write_error_count(), 1u);
 #endif
 }
 
-TEST_F(c_p8_sink_file_test, empty_buffer_lists_are_noop)
+TEST_F(c_p8_sink_file_test, empty_service_list_is_noop)
 {
     cp8_sink_file lo_sink(make_config(mo_tmp_dir));
     ASSERT_TRUE(lo_sink.open());
 
-    kit::c_lst<uint8_t *>    lo_data_bufs;
     kit::c_lst<s_p8_svc_buf> lo_svc_bufs;
-
-    EXPECT_TRUE(lo_sink.write_data(lo_data_bufs));
     EXPECT_TRUE(lo_sink.write_service(lo_svc_bufs));
 
 #ifdef P8_TESTING
@@ -419,4 +445,145 @@ TEST_F(c_p8_sink_file_test, empty_buffer_lists_are_noop)
     EXPECT_EQ(lo_sink.get_write_error_count(), 0u);
 #endif
     lo_sink.close();
+}
+
+TEST_F(c_p8_sink_file_test, empty_batch_writes_only_the_packet)
+{
+    cp8_sink_file lo_sink(make_config(mo_tmp_dir));
+    ASSERT_TRUE(lo_sink.open());
+
+    const s_p8_batch      lo_batch = make_batch(0);
+    kit::c_lst<uint8_t *> lo_data_bufs;
+    EXPECT_TRUE(lo_sink.write_data(lo_batch, lo_data_bufs));
+    lo_sink.close();
+
+    const auto lo_content = read_file_bytes(find_file_with_ext(mo_tmp_dir, ".p8dat"));
+    ASSERT_EQ(lo_content.size(), sizeof(lo_batch));
+    EXPECT_EQ(0, std::memcmp(lo_content.data(), &lo_batch, sizeof(lo_batch)));
+
+#ifdef P8_TESTING
+    EXPECT_EQ(lo_sink.get_bytes_written(), sizeof(lo_batch));
+    EXPECT_EQ(lo_sink.get_write_error_count(), 0u);
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// the core sets P8_FLAG_SORTED_BATCH in the hello only when sort_batches is on; mu_flags is 0 otherwise
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_p8_sink_file_test, hello_sorted_batch_flag_follows_config)
+{
+    for(const bool lb_sort : { false, true })
+    {
+        const std::filesystem::path lo_dir  = mo_tmp_dir / (lb_sort ? "sorted" : "unsorted");
+        nlohmann::json              lo_json = make_config(lo_dir);
+        lo_json[P8_CFG_KEY_SINK]            = P8_CFG_VAL_SINK_FILE_BIN;
+        lo_json[P8_CFG_KEY_SORT_BATCHES]    = lb_sort;
+        const std::string ls_json           = lo_json.dump();
+
+        struct s_p8_config lo_config        = {};
+        lo_config.mp_json_config            = ls_json.c_str();
+        ASSERT_TRUE(p8_initialize(&lo_config));
+        p8_release();
+
+        const auto lo_path = find_file_with_ext(lo_dir, ".p8dat");
+        ASSERT_FALSE(lo_path.empty());
+        const auto lo_content = read_file_bytes(lo_path);
+        ASSERT_GE(lo_content.size(), sizeof(s_p8_hdr));
+
+        s_p8_hdr lo_hdr = {};
+        std::memcpy(&lo_hdr, lo_content.data(), sizeof(lo_hdr));
+        EXPECT_EQ(lo_hdr.mu_flags, static_cast<uint8_t>(lb_sort ? P8_FLAG_SORTED_BATCH : 0));
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// the worker opens every batch with s_p8_batch: mu_count buffers follow, numbers go in a row, and no buffer starts
+// before the previous packet's mu_timestamp
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_p8_sink_file_test, worker_batches_keep_the_timestamp_promise)
+{
+    static constexpr uint32_t lu_threads    = 4;
+    static constexpr uint32_t lu_records    = 2000;
+
+    // a small pool, so the writers force many batches
+    nlohmann::json lo_json                  = make_config(mo_tmp_dir);
+    lo_json[P8_CFG_KEY_SINK]                = P8_CFG_VAL_SINK_FILE_BIN;
+    lo_json[P8_CFG_KEY_MAX_MEMORY_SIZE]     = "256KB";
+    lo_json[P8_CFG_KEY_INITIAL_MEMORY_SIZE] = "256KB";
+    const std::string ls_json               = lo_json.dump();
+
+    struct s_p8_config lo_config            = {};
+    lo_config.mp_json_config                = ls_json.c_str();
+    ASSERT_TRUE(p8_initialize(&lo_config));
+
+    std::vector<std::thread> lo_writers;
+    for(uint32_t lu_t = 0; lu_t < lu_threads; ++lu_t)
+    {
+        lo_writers.emplace_back(
+            [lu_t]()
+            {
+                for(uint32_t lu_i = 0; lu_i < lu_records; ++lu_i)
+                {
+                    p8_log_sent(e_p8_trace0,
+                                nullptr,
+                                0,
+                                static_cast<uint32_t>(__LINE__),
+                                __FILE__,
+                                __FUNCTION__,
+                                0,
+                                nullptr,
+                                "t%u r%u",
+                                lu_t,
+                                lu_i);
+                }
+            });
+    }
+    for(auto &lo_t : lo_writers)
+    {
+        lo_t.join();
+    }
+    p8_release();
+
+    const auto lo_content = read_file_bytes(find_file_with_ext(mo_tmp_dir, ".p8dat"));
+    ASSERT_GT(lo_content.size(), sizeof(s_p8_hdr));
+
+    size_t   lz_off     = sizeof(s_p8_hdr);
+    size_t   lz_batches = 0;
+    size_t   lz_buffers = 0;
+    uint16_t lu_next    = 0;
+    uint64_t lu_prev_ts = 0;
+    while(lz_off < lo_content.size())
+    {
+        ASSERT_LE(lz_off + sizeof(s_p8_batch), lo_content.size());
+        s_p8_batch lo_batch = {};
+        std::memcpy(&lo_batch, lo_content.data() + lz_off, sizeof(lo_batch));
+        lz_off += sizeof(lo_batch);
+
+        ASSERT_EQ(lo_batch.mu_packet_type, P8_PACKET_BATCH);
+        EXPECT_EQ(lo_batch.mu_batch, lu_next);
+        EXPECT_GE(lo_batch.mu_timestamp, lu_prev_ts);
+
+        for(uint32_t lu_i = 0; lu_i < lo_batch.mu_count; ++lu_i)
+        {
+            ASSERT_LE(lz_off + sizeof(s_p8_data_buf_hdr), lo_content.size());
+            s_p8_data_buf_hdr lo_hdr = {};
+            std::memcpy(&lo_hdr, lo_content.data() + lz_off, sizeof(lo_hdr));
+            ASSERT_EQ(lo_hdr.mu_packet_type, P8_PACKET_LOGS);
+            ASSERT_GE(static_cast<size_t>(lo_hdr.mu_size), sizeof(lo_hdr));
+            // the promise of the previous packet; before the first packet it is 0
+            EXPECT_GE(lo_hdr.mu_start_time, lu_prev_ts);
+            lz_off += lo_hdr.mu_size;
+            ++lz_buffers;
+        }
+
+        lu_next    = static_cast<uint16_t>(lo_batch.mu_batch + 1);
+        lu_prev_ts = lo_batch.mu_timestamp;
+        ++lz_batches;
+    }
+
+    EXPECT_EQ(lz_off, lo_content.size());
+    EXPECT_GT(lz_batches, 1u);
+    EXPECT_GT(lz_buffers, 0u);
 }

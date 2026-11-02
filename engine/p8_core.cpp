@@ -17,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -180,6 +181,38 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
                          ls_init_mem.empty() ? nullptr : ls_init_mem.c_str()))
     {
         return;
+    }
+
+    if(lo_json.contains(P8_CFG_KEY_SORT_BATCHES) && lo_json[P8_CFG_KEY_SORT_BATCHES].is_boolean())
+    {
+        mb_sort_batches = lo_json[P8_CFG_KEY_SORT_BATCHES].get<bool>();
+    }
+
+    // sized to the pool, so sorting never allocates on the worker path; an infinite budget grows lazily
+    if(mb_sort_batches && mp_memory_budget->get_max() != std::numeric_limits<size_t>::max())
+    {
+        try
+        {
+            mo_batch_keys.resize(mp_memory_budget->get_max() / mz_data_buffer_size);
+            mo_batch_bufs.resize(mo_batch_keys.size());
+        }
+        catch(const std::bad_alloc &)
+        {
+            std::fprintf(stderr, "cp8_core: batch sort arrays allocation failed, sorting disabled\n");
+            mb_sort_batches = false;
+        }
+    }
+
+    // in clock ticks once, so the worker's per-cycle checks are plain compares
+    uint64_t lu_freq_numer = 0;
+    uint64_t lu_freq_denom = 0;
+    kit::get_hires_ticks_freq(lu_freq_numer, lu_freq_denom);
+    if(lu_freq_numer)
+    {
+        mu_batch_margin_ticks
+            = static_cast<uint64_t>(P8_CORE_BATCH_MARGIN_US) * 1000ULL * lu_freq_denom / lu_freq_numer;
+        mu_batch_idle_ticks
+            = static_cast<uint64_t>(P8_CORE_IDLE_BATCH_INTERVAL_MS) * 1000000ULL * lu_freq_denom / lu_freq_numer;
     }
 
     init_header(ip_config);
@@ -363,10 +396,15 @@ bool cp8_core::init_header(const struct s_p8_config *ip_config)
     uint32_t lu_endian         = 0x1;
     mo_hdr.mu_is_big_endian    = (*reinterpret_cast<uint8_t *>(&lu_endian) == 0) ? 1 : 0;
 
-    mo_hdr.mi_utc_sec_offset   = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
-    mo_hdr.mu_size             = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
-    mo_hdr.mu_process_id       = kit::get_process_id();
-    mo_hdr.mu_system_time      = kit::get_system_time();
+    if(mb_sort_batches)
+    {
+        mo_hdr.mu_flags = static_cast<uint8_t>(mo_hdr.mu_flags | P8_FLAG_SORTED_BATCH);
+    }
+
+    mo_hdr.mi_utc_sec_offset = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
+    mo_hdr.mu_size           = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
+    mo_hdr.mu_process_id     = kit::get_process_id();
+    mo_hdr.mu_system_time    = kit::get_system_time();
 
     // TODO: use this callbacks by logs, traces, metrics
     if(ip_config->ml_timer_value && ip_config->ml_timer_frequency)
@@ -497,7 +535,7 @@ void cp8_core::worker_main()
         if(!lb_skip)
         {
             // this cycle's data from live writers and from writers that exited
-            collect_batch(lo_ready);
+            const uint64_t lu_ts = collect_batch(lo_ready);
 
             // after the whole batch is collected, so descriptors used by it are sent before its data
             mo_svc_mutex.lock();
@@ -538,7 +576,7 @@ void cp8_core::worker_main()
             mb_wake_pending.store(false, std::memory_order_seq_cst);
 
             // write the batch to the sink and recycle it (single capture point)
-            flush_ready(lo_ready);
+            flush_ready(lo_ready, lu_ts);
         }
         else
         {
@@ -1193,8 +1231,12 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
+uint64_t cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
 {
+    // before any writer lock: a buffer this batch misses is started after its writer's pull, so at or after it
+    const uint64_t lu_now = kit::get_hires_ticks();
+    const uint64_t lu_ts  = (lu_now > mu_batch_margin_ticks) ? lu_now - mu_batch_margin_ticks : 0;
+
     drain_writers(io_data);
 
     // after the drain, so a writer that exits during it still lands in this batch
@@ -1204,6 +1246,8 @@ void cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
         io_data.push_last(mo_ready_queue.pull_first());
     }
     mo_ready_lock.unlock();
+
+    return lu_ts;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1245,7 +1289,7 @@ s_p8_drop_stats cp8_core::get_dropped_stats() const
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
+void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
 {
     // Counts every invocation (including the early-out below) plus its timing.
     // No-op unless the build was configured with a *-tracy preset.
@@ -1254,15 +1298,32 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
     // Plot the incoming buffer count on function entry. No-op without *-tracy.
     P8_PROF_PLOT("flush_ready io_ready.size", static_cast<int64_t>(io_ready.size()));
 
-    if(0 == io_ready.size())
+    // with no data, an empty batch once per interval; after data the interval is over at once
+    if(0 == io_ready.size() && iu_ts - mu_batch_idle_ts < mu_batch_idle_ticks)
     {
         return;
     }
+
+    if(mb_sort_batches)
+    {
+        sort_batch(io_ready);
+    }
+
+    s_p8_batch lo_batch     = {};
+    lo_batch.mu_packet_type = P8_PACKET_BATCH;
+    lo_batch.mu_batch       = mu_batch_index++;
+    lo_batch.mu_count       = static_cast<uint32_t>(io_ready.size());
+    lo_batch.mu_timestamp   = iu_ts;
+
+    // after data the next cycle without data sends an empty batch, so the server releases this batch's tail;
+    // early wakes always bring data, so the cycle before a pause is a timeout wake (doc/live_stream_ordering.md, 3.1)
+    mu_batch_idle_ts        = (lo_batch.mu_count > 0) ? 0 : lo_batch.mu_timestamp;
 
 #ifdef P8_TESTING
     if(mb_capture_enabled.load(std::memory_order_relaxed))
     {
         std::lock_guard<std::mutex> lo_lock(mo_capture_mutex);
+        mo_captured_batches.push_back(lo_batch);
         for(auto lo_it = io_ready.cbegin(); lo_it != io_ready.cend(); ++lo_it)
         {
             uint8_t *lp_buf = *lo_it;
@@ -1271,11 +1332,90 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready)
     }
 #endif
 
-    mp_sink->write_data(io_ready);
+    mp_sink->write_data(lo_batch, io_ready);
 
     // recycle the consumed data buffers back to the pool in one batch (single
     // pool-mutex acquisition for the whole flush)
     release_buffers(io_ready);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_core::sort_batch(kit::c_lst<uint8_t *> &io_ready)
+{
+    P8_PROF_ZONE();
+
+    const size_t lz_count = io_ready.size();
+    if(lz_count < 2)
+    {
+        return;
+    }
+
+    if(mo_batch_bufs.size() < lz_count)
+    {
+        try
+        {
+            mo_batch_keys.resize(lz_count);
+            mo_batch_bufs.resize(lz_count);
+        }
+        catch(const std::bad_alloc &)
+        {
+            return;
+        }
+    }
+
+    size_t lz_pos = 0;
+    for(uint8_t *lp_buf : io_ready)
+    {
+        mo_batch_bufs[lz_pos++] = lp_buf;
+    }
+
+    size_t lz_units  = 0;
+    bool   lb_sorted = true;
+    for(size_t lz_i = 0; lz_i < lz_count;)
+    {
+        // a fragment chain moves as one unit, keyed by its first buffer
+        size_t lz_last = lz_i;
+        while(
+            lz_last + 1 < lz_count
+            && (reinterpret_cast<const s_p8_data_buf_hdr *>(mo_batch_bufs[lz_last])->mu_flags & P8_DATA_FLAG_FRAGMENT))
+        {
+            ++lz_last;
+        }
+
+        s_batch_key &lr_key = mo_batch_keys[lz_units];
+        lr_key.mu_start     = reinterpret_cast<const s_p8_data_buf_hdr *>(mo_batch_bufs[lz_i])->mu_start_time;
+        lr_key.mu_pos       = static_cast<uint32_t>(lz_i);
+        lr_key.mu_len       = static_cast<uint32_t>(lz_last - lz_i + 1);
+        if(lz_units > 0 && lr_key.mu_start < mo_batch_keys[lz_units - 1].mu_start)
+        {
+            lb_sorted = false;
+        }
+        ++lz_units;
+        lz_i = lz_last + 1;
+    }
+
+    if(lb_sorted)
+    {
+        return;
+    }
+
+    // the position breaks ties, so buffers with equal starts keep the drain order
+    std::sort(
+        mo_batch_keys.begin(),
+        mo_batch_keys.begin() + static_cast<std::ptrdiff_t>(lz_units),
+        [](const s_batch_key &ir_a, const s_batch_key &ir_b)
+        { return ir_a.mu_start < ir_b.mu_start || (ir_a.mu_start == ir_b.mu_start && ir_a.mu_pos < ir_b.mu_pos); });
+
+    // list cells are reused, nothing is allocated
+    io_ready.clear(kit::e_c_lst_pool_policy::e_keep);
+    for(size_t lz_u = 0; lz_u < lz_units; ++lz_u)
+    {
+        const s_batch_key &lr_key = mo_batch_keys[lz_u];
+        for(uint32_t lu_i = 0; lu_i < lr_key.mu_len; ++lu_i)
+        {
+            io_ready.push_last(mo_batch_bufs[lr_key.mu_pos + lu_i]);
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1884,6 +2024,7 @@ void p8_test_enable_buffer_capture()
     {
         std::lock_guard<std::mutex> lo_lock(gp_instance->mo_capture_mutex);
         gp_instance->mo_captured_buffers.clear();
+        gp_instance->mo_captured_batches.clear();
         gp_instance->mb_capture_enabled = true;
     }
 }
@@ -1917,12 +2058,20 @@ const std::vector<std::vector<uint8_t>> &p8_test_get_captured_buffers()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+const std::vector<s_p8_batch> &p8_test_get_captured_batches()
+{
+    static const std::vector<s_p8_batch> lo_empty;
+    return gp_instance ? gp_instance->mo_captured_batches : lo_empty;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void p8_test_clear_captured_buffers()
 {
     if(gp_instance)
     {
         std::lock_guard<std::mutex> lo_lock(gp_instance->mo_capture_mutex);
         gp_instance->mo_captured_buffers.clear();
+        gp_instance->mo_captured_batches.clear();
     }
 }
 
@@ -1993,8 +2142,8 @@ void p8_test_drain_writers()
 
     kit::c_lst<uint8_t *> lo_ready;
 
-    gp_instance->collect_batch(lo_ready);
-    gp_instance->flush_ready(lo_ready);
+    const uint64_t lu_ts = gp_instance->collect_batch(lo_ready);
+    gp_instance->flush_ready(lo_ready, lu_ts);
 }
 
 #endif // P8_TESTING

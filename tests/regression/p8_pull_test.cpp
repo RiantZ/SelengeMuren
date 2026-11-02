@@ -6,6 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <latch>
 #include <string>
@@ -225,4 +228,131 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
     EXPECT_EQ(p8_test_get_dropped_stats().mu_logs, 1u);
     // the two earlier complete records (buffers A and B) were not rolled back
     EXPECT_GE(lz_capture, 2u);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// with sort_batches on, a batch drained newest writer first leaves the core ordered by buffer start
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, sorted_batch_orders_buffers_by_start)
+{
+    static constexpr uint32_t lu_thread_count = 3;
+
+    init_core("{"
+              "\"" P8_CFG_KEY_MAX_MEMORY_SIZE "\": \"1MB\","
+              "\"" P8_CFG_KEY_INITIAL_MEMORY_SIZE "\": \"1MB\","
+              "\"" P8_CFG_KEY_SORT_BATCHES "\": true"
+              "}");
+    p8_test_enable_buffer_capture();
+
+    std::atomic<uint32_t>    lo_sent { 0 };
+    std::latch               lo_release_latch(1);
+    std::vector<std::thread> lo_threads;
+    lo_threads.reserve(lu_thread_count);
+
+    // one thread after another, so each new writer takes a later buffer than the previous one
+    for(uint32_t lu_i = 0; lu_i < lu_thread_count; ++lu_i)
+    {
+        lo_threads.emplace_back(
+            [&, lu_i]()
+            {
+                p8_log_sent(e_p8_trace0,
+                            nullptr,
+                            0,
+                            static_cast<uint32_t>(__LINE__),
+                            __FILE__,
+                            __FUNCTION__,
+                            0,
+                            nullptr,
+                            "thread %u",
+                            lu_i);
+                lo_sent.fetch_add(1);
+                lo_release_latch.wait();
+            });
+
+        while(lo_sent.load() <= lu_i)
+        {
+            std::this_thread::yield();
+        }
+    }
+
+    ASSERT_EQ(p8_test_get_writer_count(), lu_thread_count);
+    p8_test_drain_writers();
+
+    std::vector<uint64_t> lo_starts;
+    for(const std::vector<uint8_t> &lr_buf : p8_test_get_captured_buffers())
+    {
+        lo_starts.push_back(reinterpret_cast<const s_p8_data_buf_hdr *>(lr_buf.data())->mu_start_time);
+    }
+
+    lo_release_latch.count_down();
+    for(auto &lo_t : lo_threads)
+    {
+        lo_t.join();
+    }
+
+    ASSERT_EQ(lo_starts.size(), lu_thread_count);
+    EXPECT_TRUE(std::is_sorted(lo_starts.begin(), lo_starts.end()));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// with no data, an empty packet goes at start and right after data, then not until the idle interval passes
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
+{
+    init_core(make_mem_config(16).c_str());
+    p8_test_enable_buffer_capture();
+
+    // the last-packet time starts at 0, so exactly one idle packet goes at start: from this drain, or from the
+    // worker if its first cycle came before capture was enabled
+    p8_test_drain_writers();
+    p8_test_drain_writers();
+    const std::vector<s_p8_batch> lo_start = p8_test_get_captured_batches();
+    ASSERT_LE(lo_start.size(), 1u);
+    if(!lo_start.empty())
+    {
+        EXPECT_EQ(lo_start[0].mu_batch, 0);
+        EXPECT_EQ(lo_start[0].mu_count, 0u);
+    }
+    p8_test_clear_captured_buffers();
+
+    bool        lb_sent = false;
+    std::thread lo_thread(
+        [&lb_sent]()
+        {
+            lb_sent = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "tail");
+        });
+    lo_thread.join();
+    ASSERT_TRUE(lb_sent);
+    p8_test_drain_writers();
+
+    // a worker wakes this late only by timeout, well past the 10 us margin, so the empty packet covers the record
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    p8_test_drain_writers();
+    p8_test_drain_writers();
+
+    // the start packet took number 0 either way
+    const std::vector<s_p8_batch> &lr_batches = p8_test_get_captured_batches();
+    ASSERT_EQ(lr_batches.size(), 2u);
+    EXPECT_EQ(lr_batches[0].mu_packet_type, P8_PACKET_BATCH);
+    EXPECT_EQ(lr_batches[0].mu_batch, 1);
+    EXPECT_EQ(lr_batches[0].mu_count, 1u);
+    EXPECT_EQ(lr_batches[1].mu_packet_type, P8_PACKET_BATCH);
+    EXPECT_EQ(lr_batches[1].mu_batch, 2);
+    EXPECT_EQ(lr_batches[1].mu_count, 0u);
+    EXPECT_LE(lr_batches[0].mu_timestamp, lr_batches[1].mu_timestamp);
+
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 1u);
+    const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
 }

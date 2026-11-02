@@ -34,6 +34,13 @@
 // infinite/default budget from reading as permanent pressure.
 #define P8_CORE_FREE_MEM_PERCENT       75
 
+// The batch timestamp is taken this much early, so a writer's clock read that the CPU
+// reorders around the writer lock still lands at or after it.
+#define P8_CORE_BATCH_MARGIN_US        10
+
+// While idle, the worker sends an empty batch packet this often, so the server sees the stream alive.
+#define P8_CORE_IDLE_BATCH_INTERVAL_MS 5000
+
 class cp8_tls_writer;
 struct s_p8_log_desc;
 struct s_p8_log_mod;
@@ -173,19 +180,21 @@ private:
     // registry order. Takes mo_writers_lock and each writer's lock internally.
     void drain_writers(kit::c_lst<uint8_t *> &io_data);
 
-    // One cycle's data batch: drain_writers, then the ready queue. Shared by the worker and
-    // p8_test_drain_writers so both keep the same order.
-    void collect_batch(kit::c_lst<uint8_t *> &io_data);
+    // One cycle's batch: its timestamp first, then drain_writers and the ready queue; returns the timestamp.
+    // Shared by the worker and p8_test_drain_writers so both keep the same order.
+    uint64_t collect_batch(kit::c_lst<uint8_t *> &io_data);
 
     // Pull-and-reset every registered writer's drop counters and fold them into
     // the core accumulators. Runs on the worker's P8_CORE_STATS_POLL_INTERVAL_MS
     // cadence. Takes mo_writers_lock; the per-writer pull is lock-free.
     void poll_dropped_stats();
 
-    // Write a batch of ready data buffers to the sink and recycle them. Single
-    // choke point for both the worker-pull path and the writer-shutdown ready
-    // queue, and the only place data buffers are captured under P8_TESTING.
-    void flush_ready(kit::c_lst<uint8_t *> &io_ready);
+    // Send the batch packet and the batch to the sink and recycle the buffers; with no data, an empty batch goes right
+    // after data and then once per P8_CORE_IDLE_BATCH_INTERVAL_MS. The only place data is captured under P8_TESTING.
+    void flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts);
+
+    // Reorder a batch by buffer start, keeping fragment chains whole; no-op when already ordered.
+    void sort_batch(kit::c_lst<uint8_t *> &io_ready);
 
     // Encode attribute id+value pairs (same wire layout as
     // cp8_tls_writer::serialize_attrs) into or_blob, resolving each attribute's type
@@ -295,6 +304,25 @@ private:
     kit::c_lst<uint8_t *> mo_ready_queue { 4096 };
     std::mutex            mo_ready_lock;
 
+    // one sortable unit of a data batch: a single buffer or a whole fragment chain
+    struct s_batch_key
+    {
+        uint64_t mu_start;
+        uint32_t mu_pos;
+        uint32_t mu_len;
+    };
+
+    // batch sort ("sort_batches" config key); arrays are sized to the pool at init
+    bool                     mb_sort_batches = false;
+    std::vector<s_batch_key> mo_batch_keys;
+    std::vector<uint8_t *>   mo_batch_bufs;
+
+    // batch packets (s_p8_batch), used only by the thread that runs flush_ready
+    uint64_t mu_batch_margin_ticks = 0; // P8_CORE_BATCH_MARGIN_US in clock ticks
+    uint64_t mu_batch_idle_ticks   = 0; // P8_CORE_IDLE_BATCH_INTERVAL_MS in clock ticks
+    uint64_t mu_batch_idle_ts      = 0; // the idle interval counts from it; 0 after data, so it is over at once
+    uint16_t mu_batch_index        = 0; // mu_batch of the next packet
+
 #ifdef P8_TESTING
     friend size_t                                   p8_test_get_buffer_size();
     friend size_t                                   p8_test_get_free_buffers_count();
@@ -304,6 +332,7 @@ private:
     friend void                                     p8_test_disable_buffer_capture();
     friend size_t                                   p8_test_get_captured_count();
     friend const std::vector<std::vector<uint8_t>> &p8_test_get_captured_buffers();
+    friend const std::vector<s_p8_batch>           &p8_test_get_captured_batches();
     friend void                                     p8_test_clear_captured_buffers();
     friend size_t                                   p8_test_get_writer_count();
     friend cp8_tls_writer                          *p8_test_get_writers_head();
@@ -315,6 +344,7 @@ private:
     std::atomic<bool>                 mb_capture_enabled { false };
     std::mutex                        mo_capture_mutex;
     std::vector<std::vector<uint8_t>> mo_captured_buffers;
+    std::vector<s_p8_batch>           mo_captured_batches;
 #endif
 };
 
@@ -333,6 +363,7 @@ void                                     p8_test_enable_buffer_capture();
 void                                     p8_test_disable_buffer_capture();
 size_t                                   p8_test_get_captured_count();
 const std::vector<std::vector<uint8_t>> &p8_test_get_captured_buffers();
+const std::vector<s_p8_batch>           &p8_test_get_captured_batches();
 void                                     p8_test_clear_captured_buffers();
 size_t                                   p8_test_get_writer_count();
 cp8_tls_writer                          *p8_test_get_writers_head();
