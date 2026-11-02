@@ -32,6 +32,8 @@ extern "C"
 #define P8_PROCESS_NAME_MAX_LEN 256
 #define P8_HOST_NAME_MAX_LEN    256
 
+#define P8_FLAG_SORTED_BATCH    (1 << 0) // s_p8_hdr::mu_flags: buffers of every data batch are ordered by start time
+
 // Max length (in bytes) of a serialized service-descriptor string (file,
 // function, format, attribute name). Longer strings are truncated to this
 // boundary so a single descriptor never bloats a service buffer.
@@ -93,7 +95,7 @@ extern "C"
         uint8_t  mu_packet_type;      // P8_PACKET_MAIN
         uint8_t  mu_protocol_version; // P8_PROTOCOL_VERSION
         uint8_t  mu_is_big_endian;    // 1 if host is big-endian, 0 - 0 otherwise
-        uint8_t  mu_padding;          // padding
+        uint8_t  mu_flags;            // P8_FLAG_XXX bit flags, 0 by default
         int32_t  mi_utc_sec_offset;   // utc offset in seconds
         uint32_t mu_size;             // alligned on 8 bytes!
         uint32_t mu_process_id;       // host process ID
