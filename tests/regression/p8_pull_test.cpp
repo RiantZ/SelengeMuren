@@ -293,3 +293,55 @@ TEST_F(c_pull_test, sorted_batch_orders_buffers_by_start)
     ASSERT_EQ(lo_starts.size(), lu_thread_count);
     EXPECT_TRUE(std::is_sorted(lo_starts.begin(), lo_starts.end()));
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// with no data, an empty packet goes only once per idle interval: at start, but not right after data
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, empty_batch_only_after_idle_interval)
+{
+    init_core(make_mem_config(16).c_str());
+    p8_test_enable_buffer_capture();
+
+    // the last-packet time starts at 0, so exactly one idle packet goes at start: from this drain, or from the
+    // worker if its first cycle came before capture was enabled
+    p8_test_drain_writers();
+    p8_test_drain_writers();
+    const std::vector<s_p8_batch> lo_start = p8_test_get_captured_batches();
+    ASSERT_LE(lo_start.size(), 1u);
+    if(!lo_start.empty())
+    {
+        EXPECT_EQ(lo_start[0].mu_batch, 0);
+        EXPECT_EQ(lo_start[0].mu_count, 0u);
+    }
+    p8_test_clear_captured_buffers();
+
+    bool        lb_sent = false;
+    std::thread lo_thread(
+        [&lb_sent]()
+        {
+            lb_sent = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "tail");
+        });
+    lo_thread.join();
+    ASSERT_TRUE(lb_sent);
+    p8_test_drain_writers();
+
+    // the interval since the data packet has not passed, so no empty packet follows it
+    p8_test_drain_writers();
+
+    // the start packet took number 0 either way
+    const std::vector<s_p8_batch> &lr_batches = p8_test_get_captured_batches();
+    ASSERT_EQ(lr_batches.size(), 1u);
+    EXPECT_EQ(lr_batches[0].mu_packet_type, P8_PACKET_BATCH);
+    EXPECT_EQ(lr_batches[0].mu_batch, 1);
+    EXPECT_EQ(lr_batches[0].mu_count, 1u);
+    EXPECT_EQ(p8_test_get_captured_buffers().size(), 1u);
+}

@@ -16,9 +16,9 @@ struct s_p8_hdr;
 // configured "FileBin"."OutDir" directory - one for service descriptors
 // (*.p8svc, fed by write_service) and one for the hello header plus
 // log / trace / metric data (*.p8dat: write_hello's s_p8_hdr first, then
-// every write_data batch). Only "OutDir" is honored for now; rotation keys
-// documented in examples/config.json ("Roll", "MaxFiles", "MaxSizeMB") are
-// reserved for a future change.
+// every write_data batch packet followed by its buffers). Only "OutDir" is
+// honored for now; rotation keys documented in examples/config.json ("Roll",
+// "MaxFiles", "MaxSizeMB") are reserved for a future change.
 class cp8_sink_file final : public cp8_sink_iface
 {
 public:
@@ -27,7 +27,7 @@ public:
 
     bool open() override;
     bool write_hello(const struct s_p8_hdr &ir_hdr) override;
-    bool write_data(const kit::c_lst<uint8_t *> &ip_buffers) override;
+    bool write_data(const struct s_p8_batch &ir_batch, const kit::c_lst<uint8_t *> &ip_buffers) override;
     bool write_service(const kit::c_lst<s_p8_svc_buf> &ip_buffers) override;
     void flush() override;
     void close() override;
