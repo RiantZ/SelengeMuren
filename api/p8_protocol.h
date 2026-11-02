@@ -26,6 +26,7 @@ extern "C"
 #define P8_PACKET_TRACES        2 // distributed-trace spans buffer
 #define P8_PACKET_METRICS       3 // metric samples buffer
 #define P8_PACKET_SERVICE       4 // service descriptors buffer (s_p8_svc_hdr entries: logs, attrs, threads, ...)
+#define P8_PACKET_BATCH         5 // opens a data batch (s_p8_batch), empty ones included
 
 #define P8_PROTOCOL_VERSION     1
 
@@ -164,6 +165,16 @@ extern "C"
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // DATA: Logs, Metric, Traces items
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // Opens every data batch; see doc/live_stream_ordering.md, 3.1
+    struct s_p8_batch
+    {
+        uint8_t  mu_packet_type; // P8_PACKET_BATCH
+        uint8_t  mu_padding;     // alignment, 0
+        uint16_t mu_batch;       // batch number, wraps at 65536
+        uint32_t mu_count;       // data buffers right after this packet
+        uint64_t mu_timestamp;   // buffers of later batches start at or after it
+    };
 
     // Header of EVERY data buffer: logs, traces, metrics
     struct s_p8_data_buf_hdr
