@@ -9,6 +9,9 @@
     //Clamped down to "max_memory_size" when larger.
     //default : 1MB
     "initial_memory_size": "1MB",
+    //Sort each data batch by buffer start time before it is sent, so a reader can release records early.
+    //default : false
+    "sort_batches": false,
     //internal library logging, next options available
     // * stdout - to console
     // * filepath - to text file, for example "./mylogfile.txt"
