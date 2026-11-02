@@ -1298,8 +1298,8 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
     // Plot the incoming buffer count on function entry. No-op without *-tracy.
     P8_PROF_PLOT("flush_ready io_ready.size", static_cast<int64_t>(io_ready.size()));
 
-    // with no data, an empty batch only once per interval since the last packet
-    if(0 == io_ready.size() && iu_ts - mu_batch_last_ts < mu_batch_idle_ticks)
+    // with no data, an empty batch once per interval; after data the interval is over at once
+    if(0 == io_ready.size() && iu_ts - mu_batch_idle_ts < mu_batch_idle_ticks)
     {
         return;
     }
@@ -1315,7 +1315,9 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
     lo_batch.mu_count       = static_cast<uint32_t>(io_ready.size());
     lo_batch.mu_timestamp   = iu_ts;
 
-    mu_batch_last_ts        = lo_batch.mu_timestamp;
+    // after data the next cycle without data sends an empty batch, so the server releases this batch's tail;
+    // early wakes always bring data, so the cycle before a pause is a timeout wake (doc/live_stream_ordering.md, 3.1)
+    mu_batch_idle_ts        = (lo_batch.mu_count > 0) ? 0 : lo_batch.mu_timestamp;
 
 #ifdef P8_TESTING
     if(mb_capture_enabled.load(std::memory_order_relaxed))

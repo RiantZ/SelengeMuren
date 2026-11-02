@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <latch>
 #include <string>
@@ -295,10 +296,10 @@ TEST_F(c_pull_test, sorted_batch_orders_buffers_by_start)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// with no data, an empty packet goes only once per idle interval: at start, but not right after data
+// with no data, an empty packet goes at start and right after data, then not until the idle interval passes
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-TEST_F(c_pull_test, empty_batch_only_after_idle_interval)
+TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
 {
     init_core(make_mem_config(16).c_str());
     p8_test_enable_buffer_capture();
@@ -334,14 +335,24 @@ TEST_F(c_pull_test, empty_batch_only_after_idle_interval)
     ASSERT_TRUE(lb_sent);
     p8_test_drain_writers();
 
-    // the interval since the data packet has not passed, so no empty packet follows it
+    // a worker wakes this late only by timeout, well past the 10 us margin, so the empty packet covers the record
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    p8_test_drain_writers();
     p8_test_drain_writers();
 
     // the start packet took number 0 either way
     const std::vector<s_p8_batch> &lr_batches = p8_test_get_captured_batches();
-    ASSERT_EQ(lr_batches.size(), 1u);
+    ASSERT_EQ(lr_batches.size(), 2u);
     EXPECT_EQ(lr_batches[0].mu_packet_type, P8_PACKET_BATCH);
     EXPECT_EQ(lr_batches[0].mu_batch, 1);
     EXPECT_EQ(lr_batches[0].mu_count, 1u);
-    EXPECT_EQ(p8_test_get_captured_buffers().size(), 1u);
+    EXPECT_EQ(lr_batches[1].mu_packet_type, P8_PACKET_BATCH);
+    EXPECT_EQ(lr_batches[1].mu_batch, 2);
+    EXPECT_EQ(lr_batches[1].mu_count, 0u);
+    EXPECT_LE(lr_batches[0].mu_timestamp, lr_batches[1].mu_timestamp);
+
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 1u);
+    const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
 }

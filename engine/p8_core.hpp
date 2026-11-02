@@ -38,8 +38,7 @@
 // reorders around the writer lock still lands at or after it.
 #define P8_CORE_BATCH_MARGIN_US        10
 
-// With no data, the worker sends an empty batch packet this often: the server sees the stream alive and releases
-// the tail of the last batch.
+// While idle, the worker sends an empty batch packet this often, so the server sees the stream alive.
 #define P8_CORE_IDLE_BATCH_INTERVAL_MS 5000
 
 class cp8_tls_writer;
@@ -190,8 +189,8 @@ private:
     // cadence. Takes mo_writers_lock; the per-writer pull is lock-free.
     void poll_dropped_stats();
 
-    // Send the batch packet and the batch to the sink and recycle the buffers; an empty batch goes once per
-    // P8_CORE_IDLE_BATCH_INTERVAL_MS. The only place data is captured under P8_TESTING.
+    // Send the batch packet and the batch to the sink and recycle the buffers; with no data, an empty batch goes right
+    // after data and then once per P8_CORE_IDLE_BATCH_INTERVAL_MS. The only place data is captured under P8_TESTING.
     void flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts);
 
     // Reorder a batch by buffer start, keeping fragment chains whole; no-op when already ordered.
@@ -321,7 +320,7 @@ private:
     // batch packets (s_p8_batch), used only by the thread that runs flush_ready
     uint64_t mu_batch_margin_ticks = 0; // P8_CORE_BATCH_MARGIN_US in clock ticks
     uint64_t mu_batch_idle_ticks   = 0; // P8_CORE_IDLE_BATCH_INTERVAL_MS in clock ticks
-    uint64_t mu_batch_last_ts      = 0; // mu_timestamp of the last packet sent
+    uint64_t mu_batch_idle_ts      = 0; // the idle interval counts from it; 0 after data, so it is over at once
     uint16_t mu_batch_index        = 0; // mu_batch of the next packet
 
 #ifdef P8_TESTING
