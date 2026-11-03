@@ -468,36 +468,6 @@ TEST_F(c_p8_sink_file_test, empty_batch_writes_only_the_packet)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// the core sets P8_FLAG_SORTED_BATCH in the hello only when sort_batches is on; mu_flags is 0 otherwise
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-TEST_F(c_p8_sink_file_test, hello_sorted_batch_flag_follows_config)
-{
-    for(const bool lb_sort : { false, true })
-    {
-        const std::filesystem::path lo_dir  = mo_tmp_dir / (lb_sort ? "sorted" : "unsorted");
-        nlohmann::json              lo_json = make_config(lo_dir);
-        lo_json[P8_CFG_KEY_SINK]            = P8_CFG_VAL_SINK_FILE_BIN;
-        lo_json[P8_CFG_KEY_SORT_BATCHES]    = lb_sort;
-        const std::string ls_json           = lo_json.dump();
-
-        struct s_p8_config lo_config        = {};
-        lo_config.mp_json_config            = ls_json.c_str();
-        ASSERT_TRUE(p8_initialize(&lo_config));
-        p8_release();
-
-        const auto lo_path = find_file_with_ext(lo_dir, ".p8dat");
-        ASSERT_FALSE(lo_path.empty());
-        const auto lo_content = read_file_bytes(lo_path);
-        ASSERT_GE(lo_content.size(), sizeof(s_p8_hdr));
-
-        s_p8_hdr lo_hdr = {};
-        std::memcpy(&lo_hdr, lo_content.data(), sizeof(lo_hdr));
-        EXPECT_EQ(lo_hdr.mu_flags, static_cast<uint8_t>(lb_sort ? P8_FLAG_SORTED_BATCH : 0));
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // the worker opens every batch with s_p8_batch: mu_count buffers follow, numbers go in a row, and no buffer starts
 // before the previous packet's mu_timestamp
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

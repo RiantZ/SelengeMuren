@@ -51,7 +51,7 @@ static_assert(sizeof(struct s_p8_hdr) == 568, "s_p8_hdr wire size changed");
 static_assert(offsetof(struct s_p8_hdr, mu_packet_type) == 0, "s_p8_hdr::mu_packet_type offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_protocol_version) == 1, "s_p8_hdr::mu_protocol_version offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_is_big_endian) == 2, "s_p8_hdr::mu_is_big_endian offset changed");
-static_assert(offsetof(struct s_p8_hdr, mu_flags) == 3, "s_p8_hdr::mu_flags offset changed");
+static_assert(offsetof(struct s_p8_hdr, mu_padding) == 3, "s_p8_hdr::mu_padding offset changed");
 static_assert(offsetof(struct s_p8_hdr, mi_utc_sec_offset) == 4, "s_p8_hdr::mi_utc_sec_offset offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_size) == 8, "s_p8_hdr::mu_size offset changed");
 static_assert(offsetof(struct s_p8_hdr, mu_process_id) == 12, "s_p8_hdr::mu_process_id offset changed");

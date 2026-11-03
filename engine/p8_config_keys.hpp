@@ -7,7 +7,6 @@
 #define P8_CFG_KEY_DESTINATION         "destination"
 #define P8_CFG_KEY_MAX_MEMORY_SIZE     "max_memory_size"
 #define P8_CFG_KEY_INITIAL_MEMORY_SIZE "initial_memory_size"
-#define P8_CFG_KEY_SORT_BATCHES        "sort_batches"
 
 /// Recognized values for the "sink" key.
 #define P8_CFG_VAL_SINK_FILE_BIN       "file.bin"
