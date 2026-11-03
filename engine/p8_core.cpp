@@ -211,6 +211,8 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
     {
         mu_batch_margin_ticks
             = static_cast<uint64_t>(P8_CORE_BATCH_MARGIN_US) * 1000ULL * lu_freq_denom / lu_freq_numer;
+        mu_batch_tail_ticks
+            = static_cast<uint64_t>(P8_CORE_THREAD_TIMEOUT_MS) * 1000000ULL * lu_freq_denom / lu_freq_numer;
         mu_batch_idle_ticks
             = static_cast<uint64_t>(P8_CORE_IDLE_BATCH_INTERVAL_MS) * 1000000ULL * lu_freq_denom / lu_freq_numer;
     }
@@ -1298,8 +1300,10 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
     // Plot the incoming buffer count on function entry. No-op without *-tracy.
     P8_PROF_PLOT("flush_ready io_ready.size", static_cast<int64_t>(io_ready.size()));
 
-    // with no data, an empty batch once per interval; after data the interval is over at once
-    if(0 == io_ready.size() && iu_ts - mu_batch_idle_ts < mu_batch_idle_ticks)
+    // with no data, an empty batch goes P8_CORE_THREAD_TIMEOUT_MS after a batch with data, so its W is later than
+    // every record sent, and P8_CORE_IDLE_BATCH_INTERVAL_MS after an empty one
+    const uint64_t lu_wait = mb_batch_with_data ? mu_batch_tail_ticks : mu_batch_idle_ticks;
+    if(0 == io_ready.size() && iu_ts - mu_batch_last_ts < lu_wait)
     {
         return;
     }
@@ -1315,9 +1319,8 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
     lo_batch.mu_count       = static_cast<uint32_t>(io_ready.size());
     lo_batch.mu_timestamp   = iu_ts;
 
-    // after data the next cycle without data sends an empty batch, so the server releases this batch's tail;
-    // early wakes always bring data, so the cycle before a pause is a timeout wake (doc/live_stream_ordering.md, 3.1)
-    mu_batch_idle_ts        = (lo_batch.mu_count > 0) ? 0 : lo_batch.mu_timestamp;
+    mu_batch_last_ts        = lo_batch.mu_timestamp;
+    mb_batch_with_data      = lo_batch.mu_count > 0;
 
 #ifdef P8_TESTING
     if(mb_capture_enabled.load(std::memory_order_relaxed))

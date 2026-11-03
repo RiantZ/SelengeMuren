@@ -335,8 +335,8 @@ TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
     ASSERT_TRUE(lb_sent);
     p8_test_drain_writers();
 
-    // a worker wakes this late only by timeout, well past the 10 us margin, so the empty packet covers the record
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // a worker cycle after the data, so the empty packet's W is later than the record
+    std::this_thread::sleep_for(std::chrono::milliseconds(P8_CORE_THREAD_TIMEOUT_MS + 10));
     p8_test_drain_writers();
     p8_test_drain_writers();
 
@@ -353,6 +353,62 @@ TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
 
     const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
     ASSERT_EQ(lr_bufs.size(), 1u);
+    const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a cycle without data right after data sends nothing; a worker cycle later the empty packet covers the record
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, early_wake_after_data_sends_nothing)
+{
+    init_core(make_mem_config(16).c_str());
+    p8_test_enable_buffer_capture();
+
+    // drop the start packet, see empty_batch_follows_data_then_silence
+    p8_test_drain_writers();
+    p8_test_clear_captured_buffers();
+
+    bool        lb_sent  = false;
+    size_t      lz_early = 0;
+    std::thread lo_thread(
+        [&lb_sent, &lz_early]()
+        {
+            // the drain follows the record at once, so the record is later than the batch's W
+            lb_sent = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "tail");
+            p8_test_drain_writers();
+
+            // an early wake without data, like the one an exiting thread causes right after a batch
+            p8_test_drain_writers();
+            lz_early = p8_test_get_captured_batches().size();
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(P8_CORE_THREAD_TIMEOUT_MS + 10));
+            p8_test_drain_writers();
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+    ASSERT_TRUE(lb_sent);
+
+    // only the data packet before the pause
+    EXPECT_EQ(lz_early, 1u);
+
+    const std::vector<s_p8_batch>           &lr_batches = p8_test_get_captured_batches();
+    const std::vector<std::vector<uint8_t>> &lr_bufs    = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_batches.size(), 2u);
+    ASSERT_EQ(lr_bufs.size(), 1u);
+    EXPECT_EQ(lr_batches[0].mu_count, 1u);
+    EXPECT_EQ(lr_batches[1].mu_count, 0u);
+
+    // the empty packet covers the record, so the server can release it
     const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
     EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
 }
