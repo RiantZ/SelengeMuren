@@ -193,9 +193,6 @@ private:
     // one worker cycle after data, then every idle interval. Data is captured only here under P8_TESTING.
     void flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts);
 
-    // Reorder a batch by buffer start, keeping fragment chains whole; no-op when already ordered.
-    void sort_batch(kit::c_lst<uint8_t *> &io_ready);
-
     // Encode attribute id+value pairs (same wire layout as
     // cp8_tls_writer::serialize_attrs) into or_blob, resolving each attribute's type
     // from the registry. Takes mo_attr_mutex, so it must be called WITHOUT
@@ -303,19 +300,6 @@ private:
     // recycled by the worker thread. Protected by a mutex on the hot path.
     kit::c_lst<uint8_t *> mo_ready_queue { 4096 };
     std::mutex            mo_ready_lock;
-
-    // one sortable unit of a data batch: a single buffer or a whole fragment chain
-    struct s_batch_key
-    {
-        uint64_t mu_start;
-        uint32_t mu_pos;
-        uint32_t mu_len;
-    };
-
-    // batch sort ("sort_batches" config key); arrays are sized to the pool at init
-    bool                     mb_sort_batches = false;
-    std::vector<s_batch_key> mo_batch_keys;
-    std::vector<uint8_t *>   mo_batch_bufs;
 
     // batch packets (s_p8_batch), used only by the thread that runs flush_ready
     uint64_t mu_batch_margin_ticks = 0;     // P8_CORE_BATCH_MARGIN_US (10usec) in clock ticks

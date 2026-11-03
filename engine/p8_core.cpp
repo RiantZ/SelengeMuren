@@ -17,7 +17,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -181,26 +180,6 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
                          ls_init_mem.empty() ? nullptr : ls_init_mem.c_str()))
     {
         return;
-    }
-
-    if(lo_json.contains(P8_CFG_KEY_SORT_BATCHES) && lo_json[P8_CFG_KEY_SORT_BATCHES].is_boolean())
-    {
-        mb_sort_batches = lo_json[P8_CFG_KEY_SORT_BATCHES].get<bool>();
-    }
-
-    // sized to the pool, so sorting never allocates on the worker path; an infinite budget grows lazily
-    if(mb_sort_batches && mp_memory_budget->get_max() != std::numeric_limits<size_t>::max())
-    {
-        try
-        {
-            mo_batch_keys.resize(mp_memory_budget->get_max() / mz_data_buffer_size);
-            mo_batch_bufs.resize(mo_batch_keys.size());
-        }
-        catch(const std::bad_alloc &)
-        {
-            std::fprintf(stderr, "cp8_core: batch sort arrays allocation failed, sorting disabled\n");
-            mb_sort_batches = false;
-        }
     }
 
     // in clock ticks once, so the worker's per-cycle checks are plain compares
@@ -398,15 +377,10 @@ bool cp8_core::init_header(const struct s_p8_config *ip_config)
     uint32_t lu_endian         = 0x1;
     mo_hdr.mu_is_big_endian    = (*reinterpret_cast<uint8_t *>(&lu_endian) == 0) ? 1 : 0;
 
-    if(mb_sort_batches)
-    {
-        mo_hdr.mu_flags = static_cast<uint8_t>(mo_hdr.mu_flags | P8_FLAG_SORTED_BATCH);
-    }
-
-    mo_hdr.mi_utc_sec_offset = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
-    mo_hdr.mu_size           = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
-    mo_hdr.mu_process_id     = kit::get_process_id();
-    mo_hdr.mu_system_time    = kit::get_system_time();
+    mo_hdr.mi_utc_sec_offset   = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
+    mo_hdr.mu_size             = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
+    mo_hdr.mu_process_id       = kit::get_process_id();
+    mo_hdr.mu_system_time      = kit::get_system_time();
 
     // TODO: use this callbacks by logs, traces, metrics
     if(ip_config->ml_timer_value && ip_config->ml_timer_frequency)
@@ -1308,11 +1282,6 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
         return;
     }
 
-    if(mb_sort_batches)
-    {
-        sort_batch(io_ready);
-    }
-
     s_p8_batch lo_batch     = {};
     lo_batch.mu_packet_type = P8_PACKET_BATCH;
     lo_batch.mu_batch       = mu_batch_index++;
@@ -1340,85 +1309,6 @@ void cp8_core::flush_ready(kit::c_lst<uint8_t *> &io_ready, uint64_t iu_ts)
     // recycle the consumed data buffers back to the pool in one batch (single
     // pool-mutex acquisition for the whole flush)
     release_buffers(io_ready);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::sort_batch(kit::c_lst<uint8_t *> &io_ready)
-{
-    P8_PROF_ZONE();
-
-    const size_t lz_count = io_ready.size();
-    if(lz_count < 2)
-    {
-        return;
-    }
-
-    if(mo_batch_bufs.size() < lz_count)
-    {
-        try
-        {
-            mo_batch_keys.resize(lz_count);
-            mo_batch_bufs.resize(lz_count);
-        }
-        catch(const std::bad_alloc &)
-        {
-            return;
-        }
-    }
-
-    size_t lz_pos = 0;
-    for(uint8_t *lp_buf : io_ready)
-    {
-        mo_batch_bufs[lz_pos++] = lp_buf;
-    }
-
-    size_t lz_units  = 0;
-    bool   lb_sorted = true;
-    for(size_t lz_i = 0; lz_i < lz_count;)
-    {
-        // a fragment chain moves as one unit, keyed by its first buffer
-        size_t lz_last = lz_i;
-        while(
-            lz_last + 1 < lz_count
-            && (reinterpret_cast<const s_p8_data_buf_hdr *>(mo_batch_bufs[lz_last])->mu_flags & P8_DATA_FLAG_FRAGMENT))
-        {
-            ++lz_last;
-        }
-
-        s_batch_key &lr_key = mo_batch_keys[lz_units];
-        lr_key.mu_start     = reinterpret_cast<const s_p8_data_buf_hdr *>(mo_batch_bufs[lz_i])->mu_start_time;
-        lr_key.mu_pos       = static_cast<uint32_t>(lz_i);
-        lr_key.mu_len       = static_cast<uint32_t>(lz_last - lz_i + 1);
-        if(lz_units > 0 && lr_key.mu_start < mo_batch_keys[lz_units - 1].mu_start)
-        {
-            lb_sorted = false;
-        }
-        ++lz_units;
-        lz_i = lz_last + 1;
-    }
-
-    if(lb_sorted)
-    {
-        return;
-    }
-
-    // the position breaks ties, so buffers with equal starts keep the drain order
-    std::sort(
-        mo_batch_keys.begin(),
-        mo_batch_keys.begin() + static_cast<std::ptrdiff_t>(lz_units),
-        [](const s_batch_key &ir_a, const s_batch_key &ir_b)
-        { return ir_a.mu_start < ir_b.mu_start || (ir_a.mu_start == ir_b.mu_start && ir_a.mu_pos < ir_b.mu_pos); });
-
-    // list cells are reused, nothing is allocated
-    io_ready.clear(kit::e_c_lst_pool_policy::e_keep);
-    for(size_t lz_u = 0; lz_u < lz_units; ++lz_u)
-    {
-        const s_batch_key &lr_key = mo_batch_keys[lz_u];
-        for(uint32_t lu_i = 0; lu_i < lr_key.mu_len; ++lu_i)
-        {
-            io_ready.push_last(mo_batch_bufs[lr_key.mu_pos + lu_i]);
-        }
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
