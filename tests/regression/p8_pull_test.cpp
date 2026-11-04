@@ -229,6 +229,119 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a record discarded mid-fragmentation keeps the earlier records of the buffer it started in
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, discard_keeps_earlier_records_of_its_first_buffer)
+{
+    // 3-buffer pool: the short record and the descriptors take two, the long record runs out on the third
+    init_core(make_mem_config(3).c_str());
+    p8_test_enable_buffer_capture();
+
+    bool        lb_short = false;
+    bool        lb_long  = true;
+    std::thread lo_thread(
+        [&lb_short, &lb_long]()
+        {
+            lb_short = p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "short");
+
+            const std::string ls_long(3 * p8_test_get_buffer_size(), 'Z');
+            lb_long = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "%s",
+                                  ls_long.c_str());
+
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+    EXPECT_TRUE(lb_short);
+    EXPECT_FALSE(lb_long);
+    // all buffers but the descriptors' one are back in the pool, so the rollback leaked nothing
+    EXPECT_EQ(p8_test_get_free_buffers_count(), 2u);
+
+    // the short record is still there, in a buffer that no longer looks like a fragment
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 1u);
+    const s_p8_data_buf_hdr *lp_hdr  = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_log_item_dat *lp_item = reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1);
+    EXPECT_EQ(lp_hdr->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+    EXPECT_EQ(static_cast<size_t>(lp_hdr->mu_size), sizeof(s_p8_data_buf_hdr) + lp_item->mu_size);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a discarded record that started right after the tail of a fragmented one keeps that tail intact
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, discard_after_fragment_tail_keeps_the_tail)
+{
+    // 4-buffer pool: descriptors take one, the first record two (16 bytes spill into the second),
+    // the long record starts after that tail, gets the last buffer and still does not fit
+    init_core(make_mem_config(4).c_str());
+    p8_test_enable_buffer_capture();
+
+    bool        lb_first = false;
+    bool        lb_long  = true;
+    std::thread lo_thread(
+        [&lb_first, &lb_long]()
+        {
+            const size_t      lz_buf = p8_test_get_buffer_size();
+            const std::string ls_first(lz_buf - sizeof(s_p8_data_buf_hdr) - sizeof(s_p8_log_item_dat)
+                                           - sizeof(uint16_t) + 16,
+                                       'A');
+            lb_first = p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "%s",
+                                   ls_first.c_str());
+
+            const std::string ls_long(3 * lz_buf, 'Z');
+            lb_long = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "%s",
+                                  ls_long.c_str());
+
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+    EXPECT_TRUE(lb_first);
+    EXPECT_FALSE(lb_long);
+    EXPECT_EQ(p8_test_get_free_buffers_count(), 3u);
+
+    // the first record is whole: its first buffer continues in the second, which holds only the tail
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 2u);
+    const s_p8_data_buf_hdr *lp_head = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_data_buf_hdr *lp_tail = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[1].data());
+    EXPECT_NE(lp_head->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+    EXPECT_EQ(lp_tail->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // with no data, an empty packet goes at start and right after data, then not until the idle interval passes
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

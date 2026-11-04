@@ -454,9 +454,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         mo_desc_map[lu_hash] = lp_desc;
     }
 
-    // Mark the fragment-list boundary for this record. Any buffer parked past
-    // this point belongs to the record being serialized now, so a mid-record
-    // failure can roll back exactly this record without touching earlier ones.
+    // a rollback of this record (lbl_discard) restores this list length
     lz_frag_commit = mo_fragments.size();
 
     // write item header
@@ -680,18 +678,31 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     return true;
 
 lbl_discard:
-    // rotate_fragment_buffer failed — finalize partial item and roll back only
-    // the buffers this record added, leaving earlier complete records intact.
-    lp_hdr->mu_args_size   = static_cast<uint16_t>(lz_args_written);
-    lp_hdr->mu_attrs_count = lu_attrs_count;
-    lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
-
-    while(mo_fragments.size() > lz_frag_commit)
+    // rotate_fragment_buffer failed: give back the buffers taken only for this record
+    while(mo_fragments.size() > lz_frag_commit + 1)
     {
         mp_core->release_buffer(mo_fragments.pull_last());
     }
-    mp_buffer   = nullptr;
-    mz_buf_used = 0;
+
+    // The record began in this buffer at lp_hdr. The buffer only waited in mo_fragments: it was not released
+    // and no one else has it, so lp_hdr still points into this writer's own memory. lp_hdr - mp_buffer is
+    // where the record began; cut the buffer there and the earlier records stay.
+    mp_buffer   = mo_fragments.pull_last();
+    mz_buf_used = static_cast<size_t>(reinterpret_cast<uint8_t *>(lp_hdr) - mp_buffer);
+    if(sizeof(s_p8_data_buf_hdr) == mz_buf_used) [[unlikely]]
+    {
+        mp_core->release_buffer(mp_buffer);
+        mp_buffer   = nullptr;
+        mz_buf_used = 0;
+    }
+    else
+    {
+        // undo the fragment flag and the size set by rotate_fragment_buffer; the stop time keeps the dropped
+        // record's time until the next record overwrites it, nothing relies on it being exact
+        s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
+        lp_buf_hdr->mu_flags          = static_cast<uint8_t>(lp_buf_hdr->mu_flags & ~P8_DATA_FLAG_FRAGMENT);
+        lp_buf_hdr->mu_size           = static_cast<uint16_t>(mz_buf_used);
+    }
     mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
 
     return false;
