@@ -597,6 +597,7 @@ void cp8_core::notify_pressure()
 void cp8_core::register_writer(cp8_tls_writer *ip_writer)
 {
     std::lock_guard<std::mutex> lo_guard(mo_writers_lock);
+    ip_writer->mu_writer_id   = ++mu_writers_seq;
     ip_writer->mp_prev_writer = nullptr;
     ip_writer->mp_next_writer = mp_writers_head;
     if(mp_writers_head)

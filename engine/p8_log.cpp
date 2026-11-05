@@ -430,8 +430,8 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_buf_hdr->mu_flags          = 0;
         lp_buf_hdr->mu_size           = static_cast<uint16_t>(sizeof(s_p8_data_buf_hdr));
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
-        lp_buf_hdr->mu_start_time     = kit::get_hires_ticks();
-        lp_buf_hdr->mu_stop_time      = 0;
+        lp_buf_hdr->mu_writer_id      = mu_writer_id;
+        lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -529,12 +529,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     }
                 }
 
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len), lp_hdr->mu_timestamp);
+                P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
                 memcpy(lp_dst, &lu_len, sizeof(lu_len));
                 lp_dst          += sizeof(lu_len);
                 lz_args_written += sizeof(lu_len);
 
-                if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lp_hdr->mu_timestamp, lz_args_written))
+                if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_args_written))
                 {
                     goto lbl_discard;
                 }
@@ -542,7 +542,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             }
             default:
             {
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, lp_arg->mu_size, lp_hdr->mu_timestamp);
+                P8_ENSURE_SPACE(lp_dst, lp_buf_end, lp_arg->mu_size);
 
 #if defined(GTX32)
                 if(4 == lp_arg->mu_size)
@@ -605,7 +605,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
         if(lp_attr_desc->me_type == e_p8_attr_type::e_p8_attr_str)
         {
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(p8_attr_id), lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(p8_attr_id));
             memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
             lp_dst             += sizeof(p8_attr_id);
             lz_attrs_written   += sizeof(p8_attr_id);
@@ -618,12 +618,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                 lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
             }
 
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len), lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
             memcpy(lp_dst, &lu_len, sizeof(lu_len));
             lp_dst           += sizeof(lu_len);
             lz_attrs_written += sizeof(lu_len);
 
-            if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lp_hdr->mu_timestamp, lz_attrs_written))
+            if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_attrs_written))
             {
                 goto lbl_discard;
             }
@@ -631,7 +631,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         else
         {
             size_t lz_needed = sizeof(p8_attr_id) + sizeof(uint64_t);
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, lz_needed, lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, lz_needed);
             memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
             lp_dst += sizeof(p8_attr_id);
             memcpy(lp_dst, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t));
@@ -656,13 +656,9 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     }
 
     // update current buffer state
-    mz_buf_used = static_cast<size_t>(lp_dst - mp_buffer);
+    mz_buf_used                                                      = static_cast<size_t>(lp_dst - mp_buffer);
 
-    {
-        struct s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<struct s_p8_data_buf_hdr *>(mp_buffer);
-        lp_buf_hdr->mu_size                  = static_cast<uint16_t>(mz_buf_used);
-        lp_buf_hdr->mu_stop_time             = lp_hdr->mu_timestamp;
-    }
+    reinterpret_cast<struct s_p8_data_buf_hdr *>(mp_buffer)->mu_size = static_cast<uint16_t>(mz_buf_used);
 
     // Keep the buffers local: the worker drains them later via pull(). When the
     // current buffer can no longer fit another item (< P8_LOG_MIN_BUFFER_SPACE

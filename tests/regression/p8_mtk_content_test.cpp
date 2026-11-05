@@ -157,7 +157,7 @@ TEST_F(c_mtk_content_test, buf_hdr_packet_type)
     ASSERT_FALSE(lo_parsed.mo_all_captured.empty());
     EXPECT_EQ(lo_parsed.mo_buf_hdr.mu_packet_type, P8_PACKET_METRICS);
     EXPECT_EQ(lo_parsed.mo_buf_hdr.mu_flags, 0u);
-    EXPECT_NE(lo_parsed.mo_buf_hdr.mu_start_time, 0u);
+    EXPECT_NE(lo_parsed.mo_buf_hdr.mu_writer_id, 0u);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

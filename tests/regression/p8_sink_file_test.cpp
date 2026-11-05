@@ -541,9 +541,12 @@ TEST_F(c_p8_sink_file_test, worker_batches_keep_the_timestamp_promise)
             s_p8_data_buf_hdr lo_hdr = {};
             std::memcpy(&lo_hdr, lo_content.data() + lz_off, sizeof(lo_hdr));
             ASSERT_EQ(lo_hdr.mu_packet_type, P8_PACKET_LOGS);
-            ASSERT_GE(static_cast<size_t>(lo_hdr.mu_size), sizeof(lo_hdr));
-            // the promise of the previous packet; before the first packet it is 0
-            EXPECT_GE(lo_hdr.mu_start_time, lu_prev_ts);
+            ASSERT_GE(static_cast<size_t>(lo_hdr.mu_size), sizeof(lo_hdr) + sizeof(s_p8_log_item_dat));
+            // the promise of the previous packet for the buffer's first, earliest record; before the first packet it
+            // is 0
+            s_p8_log_item_dat lo_item = {};
+            std::memcpy(&lo_item, lo_content.data() + lz_off + sizeof(lo_hdr), sizeof(lo_item));
+            EXPECT_GE(lo_item.mu_timestamp, lu_prev_ts);
             lz_off += lo_hdr.mu_size;
             ++lz_buffers;
         }

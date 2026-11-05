@@ -53,7 +53,7 @@ extern "C"
 // Metric descriptor flags (s_p8_mtk_svc.mu_flags) carried in a P8_SVC_TYPE_MTK entry.
 #define P8_MTK_FLAG_ON          (1 << 0) // metric initial enabled state (s_p8_mtk_base.mb_on)
 
-#define P8_DATA_FLAG_FRAGMENT   (1 << 0) // buffer tail data continues in the next buffer for the same thread
+#define P8_DATA_FLAG_FRAGMENT   (1 << 0) // buffer tail data continues in the next buffer of the same writer
 #define P8_DATA_FLAG_RESERVED_1 (1 << 1)
 #define P8_DATA_FLAG_RESERVED_2 (1 << 2)
 #define P8_DATA_FLAG_RESERVED_3 (1 << 3)
@@ -181,8 +181,8 @@ extern "C"
         uint8_t  mu_flags;       // P8_DATA_FLAG_XXX
         uint16_t mu_size;        // size in bytes
         uint32_t mu_thread_id;   // thread ID which emits data
-        uint64_t mu_start_time;  // first timestamp
-        uint64_t mu_stop_time;   // last timestamp
+        uint32_t mu_writer_id;   // unique per writer for the whole session; a writer's buffers come in time order
+        uint32_t mu_buf_seq;     // the writer's buffer number: 0, 1, 2, ...; a gap means lost buffers
     };
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

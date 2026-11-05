@@ -68,8 +68,8 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
         lp_buf_hdr->mu_flags          = 0;
         lp_buf_hdr->mu_size           = static_cast<uint16_t>(sizeof(s_p8_data_buf_hdr));
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
-        lp_buf_hdr->mu_start_time     = kit::get_hires_ticks();
-        lp_buf_hdr->mu_stop_time      = 0;
+        lp_buf_hdr->mu_writer_id      = mu_writer_id;
+        lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -90,11 +90,7 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
     }
 
     // update the data-buffer header
-    {
-        s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
-        lp_buf_hdr->mu_size           = static_cast<uint16_t>(mz_buf_used);
-        lp_buf_hdr->mu_stop_time      = lu_timestamp;
-    }
+    reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer)->mu_size = static_cast<uint16_t>(mz_buf_used);
 
     // park the buffer for the worker once it can no longer hold another item
     if((mz_buf_max - mz_buf_used) < sizeof(s_p8_mtk_item_dat)) [[unlikely]]

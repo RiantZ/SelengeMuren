@@ -366,7 +366,7 @@ TEST_F(c_log_content_test, buf_hdr_size_valid)
     EXPECT_LE(lo_parsed.mo_buf_hdr.mu_size, static_cast<uint16_t>(p8_test_get_buffer_size()));
 }
 
-TEST_F(c_log_content_test, buf_hdr_thread_id_nonzero)
+TEST_F(c_log_content_test, buf_hdr_ids_nonzero)
 {
     auto lo_ctx = run_send_in_thread(
         []()
@@ -389,32 +389,7 @@ TEST_F(c_log_content_test, buf_hdr_thread_id_nonzero)
     auto lo_parsed = parse_captured_buffers();
     ASSERT_FALSE(lo_parsed.mo_all_captured.empty());
     EXPECT_NE(lo_parsed.mo_buf_hdr.mu_thread_id, 0u);
-}
-
-TEST_F(c_log_content_test, buf_hdr_timestamps_valid)
-{
-    auto lo_ctx = run_send_in_thread(
-        []()
-        {
-            return p8_log_sent(e_p8_trace0,
-                               nullptr,
-                               0,
-                               static_cast<uint32_t>(__LINE__),
-                               __FILE__,
-                               __FUNCTION__,
-                               0,
-                               nullptr,
-                               "%d",
-                               42);
-        },
-        __LINE__,
-        __FILE__);
-    ASSERT_TRUE(lo_ctx.mb_result);
-
-    auto lo_parsed = parse_captured_buffers();
-    ASSERT_FALSE(lo_parsed.mo_all_captured.empty());
-    EXPECT_NE(lo_parsed.mo_buf_hdr.mu_start_time, 0u);
-    EXPECT_NE(lo_parsed.mo_buf_hdr.mu_stop_time, 0u);
+    EXPECT_NE(lo_parsed.mo_buf_hdr.mu_writer_id, 0u);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
