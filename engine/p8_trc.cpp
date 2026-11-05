@@ -21,65 +21,79 @@ cp8_trc::~cp8_trc()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-uint64_t cp8_trc::begin(uint64_t                    iu_parent_trace_id,
+uint64_t cp8_trc::begin(const char                 *ip_name,
                         uint32_t                    iu_line,
                         const char                 *ip_file,
                         const char                 *ip_function,
                         size_t                      iz_attrs,
-                        const struct s_p8_attr_val *ip_attrs,
-                        const char                 *ip_function_args,
-                        va_list                     io_args)
+                        const struct s_p8_attr_val *ip_attrs)
 {
-    (void)iu_parent_trace_id;
+    (void)ip_name;
     (void)iu_line;
     (void)ip_file;
     (void)ip_function;
     (void)iz_attrs;
     (void)ip_attrs;
-    (void)ip_function_args;
-    (void)io_args;
     return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_trc::end(uint64_t iu_trace_id)
+uint64_t cp8_trc::begin_async(uint64_t                    iu_parent_id,
+                              const char                 *ip_name,
+                              uint32_t                    iu_line,
+                              const char                 *ip_file,
+                              const char                 *ip_function,
+                              size_t                      iz_attrs,
+                              const struct s_p8_attr_val *ip_attrs)
 {
-    (void)iu_trace_id;
-    return false;
+    (void)iu_parent_id;
+    (void)ip_name;
+    (void)iu_line;
+    (void)ip_file;
+    (void)ip_function;
+    (void)iz_attrs;
+    (void)ip_attrs;
+    return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void cp8_trc::end(uint64_t iu_span_id)
+{
+    (void)iu_span_id;
 }
 
 extern "C"
 {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    uint64_t p8_trc_begin(uint64_t                    iu_parent_trace_id,
+    uint64_t p8_trc_begin(const char                 *ip_name,
                           uint32_t                    iu_line,
                           const char                 *ip_file,
                           const char                 *ip_function,
                           size_t                      iz_attrs,
-                          const struct s_p8_attr_val *ip_attrs,
-                          const char                 *ip_function_args,
-                          ...)
+                          const struct s_p8_attr_val *ip_attrs)
     {
         thread_local cp8_trc lo_tls_trc;
-        va_list              lo_args;
-        va_start(lo_args, ip_function_args);
-        uint64_t lu_result = lo_tls_trc.begin(iu_parent_trace_id,
-                                              iu_line,
-                                              ip_file,
-                                              ip_function,
-                                              iz_attrs,
-                                              ip_attrs,
-                                              ip_function_args,
-                                              lo_args);
-        va_end(lo_args);
-        return lu_result;
+        return lo_tls_trc.begin(ip_name, iu_line, ip_file, ip_function, iz_attrs, ip_attrs);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    bool p8_trc_end(uint64_t iu_trace_id)
+    uint64_t p8_trc_begin_async(uint64_t                    iu_parent_id,
+                                const char                 *ip_name,
+                                uint32_t                    iu_line,
+                                const char                 *ip_file,
+                                const char                 *ip_function,
+                                size_t                      iz_attrs,
+                                const struct s_p8_attr_val *ip_attrs)
     {
         thread_local cp8_trc lo_tls_trc;
-        return lo_tls_trc.end(iu_trace_id);
+        return lo_tls_trc.begin_async(iu_parent_id, ip_name, iu_line, ip_file, ip_function, iz_attrs, ip_attrs);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    void p8_trc_end(uint64_t iu_span_id)
+    {
+        thread_local cp8_trc lo_tls_trc;
+        lo_tls_trc.end(iu_span_id);
     }
 
 } // extern "C"
