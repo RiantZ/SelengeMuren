@@ -1,6 +1,6 @@
 # Protocol8 (p8)
 
-C/C++ instrumentation and telemetry library: metrics, logs, distributed traces.
+C/C++ instrumentation and telemetry library: metrics, logs and traces of one process (not distributed tracing).
 Early development — API defined in `api/p8_client_api.h`, most implementations are stubs.
 
 ## Build & Test
