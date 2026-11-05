@@ -277,6 +277,7 @@ private:
     // Lock ordering: mo_writers_lock -> writer->mp_lock (never reverse).
     cp8_tls_writer *mp_writers_head  = nullptr;
     size_t          mz_writers_count = 0;
+    uint32_t        mu_writers_seq   = 0; // the last writer id given out, ids are never reused
     std::mutex      mo_writers_lock;
 
     // worker thread: wakes on an external event (mu_event_wake) or every

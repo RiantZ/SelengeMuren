@@ -430,8 +430,8 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_buf_hdr->mu_flags          = 0;
         lp_buf_hdr->mu_size           = static_cast<uint16_t>(sizeof(s_p8_data_buf_hdr));
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
-        lp_buf_hdr->mu_start_time     = kit::get_hires_ticks();
-        lp_buf_hdr->mu_stop_time      = 0;
+        lp_buf_hdr->mu_writer_id      = mu_writer_id;
+        lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -454,9 +454,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         mo_desc_map[lu_hash] = lp_desc;
     }
 
-    // Mark the fragment-list boundary for this record. Any buffer parked past
-    // this point belongs to the record being serialized now, so a mid-record
-    // failure can roll back exactly this record without touching earlier ones.
+    // a rollback of this record (lbl_discard) restores this list length
     lz_frag_commit = mo_fragments.size();
 
     // write item header
@@ -531,12 +529,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     }
                 }
 
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len), lp_hdr->mu_timestamp);
+                P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
                 memcpy(lp_dst, &lu_len, sizeof(lu_len));
                 lp_dst          += sizeof(lu_len);
                 lz_args_written += sizeof(lu_len);
 
-                if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lp_hdr->mu_timestamp, lz_args_written))
+                if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_args_written))
                 {
                     goto lbl_discard;
                 }
@@ -544,7 +542,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             }
             default:
             {
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, lp_arg->mu_size, lp_hdr->mu_timestamp);
+                P8_ENSURE_SPACE(lp_dst, lp_buf_end, lp_arg->mu_size);
 
 #if defined(GTX32)
                 if(4 == lp_arg->mu_size)
@@ -607,7 +605,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
         if(lp_attr_desc->me_type == e_p8_attr_type::e_p8_attr_str)
         {
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(p8_attr_id), lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(p8_attr_id));
             memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
             lp_dst             += sizeof(p8_attr_id);
             lz_attrs_written   += sizeof(p8_attr_id);
@@ -620,12 +618,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                 lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
             }
 
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len), lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
             memcpy(lp_dst, &lu_len, sizeof(lu_len));
             lp_dst           += sizeof(lu_len);
             lz_attrs_written += sizeof(lu_len);
 
-            if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lp_hdr->mu_timestamp, lz_attrs_written))
+            if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_attrs_written))
             {
                 goto lbl_discard;
             }
@@ -633,7 +631,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         else
         {
             size_t lz_needed = sizeof(p8_attr_id) + sizeof(uint64_t);
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, lz_needed, lp_hdr->mu_timestamp);
+            P8_ENSURE_SPACE(lp_dst, lp_buf_end, lz_needed);
             memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
             lp_dst += sizeof(p8_attr_id);
             memcpy(lp_dst, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t));
@@ -658,13 +656,9 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     }
 
     // update current buffer state
-    mz_buf_used = static_cast<size_t>(lp_dst - mp_buffer);
+    mz_buf_used                                                      = static_cast<size_t>(lp_dst - mp_buffer);
 
-    {
-        struct s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<struct s_p8_data_buf_hdr *>(mp_buffer);
-        lp_buf_hdr->mu_size                  = static_cast<uint16_t>(mz_buf_used);
-        lp_buf_hdr->mu_stop_time             = lp_hdr->mu_timestamp;
-    }
+    reinterpret_cast<struct s_p8_data_buf_hdr *>(mp_buffer)->mu_size = static_cast<uint16_t>(mz_buf_used);
 
     // Keep the buffers local: the worker drains them later via pull(). When the
     // current buffer can no longer fit another item (< P8_LOG_MIN_BUFFER_SPACE
@@ -680,18 +674,31 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     return true;
 
 lbl_discard:
-    // rotate_fragment_buffer failed — finalize partial item and roll back only
-    // the buffers this record added, leaving earlier complete records intact.
-    lp_hdr->mu_args_size   = static_cast<uint16_t>(lz_args_written);
-    lp_hdr->mu_attrs_count = lu_attrs_count;
-    lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written);
-
-    while(mo_fragments.size() > lz_frag_commit)
+    // rotate_fragment_buffer failed: give back the buffers taken only for this record
+    while(mo_fragments.size() > lz_frag_commit + 1)
     {
         mp_core->release_buffer(mo_fragments.pull_last());
     }
-    mp_buffer   = nullptr;
-    mz_buf_used = 0;
+
+    // The record began in this buffer at lp_hdr. The buffer only waited in mo_fragments: it was not released
+    // and no one else has it, so lp_hdr still points into this writer's own memory. lp_hdr - mp_buffer is
+    // where the record began; cut the buffer there and the earlier records stay.
+    mp_buffer   = mo_fragments.pull_last();
+    mz_buf_used = static_cast<size_t>(reinterpret_cast<uint8_t *>(lp_hdr) - mp_buffer);
+    if(sizeof(s_p8_data_buf_hdr) == mz_buf_used) [[unlikely]]
+    {
+        mp_core->release_buffer(mp_buffer);
+        mp_buffer   = nullptr;
+        mz_buf_used = 0;
+    }
+    else
+    {
+        // undo the fragment flag and the size set by rotate_fragment_buffer; the stop time keeps the dropped
+        // record's time until the next record overwrites it, nothing relies on it being exact
+        s_p8_data_buf_hdr *lp_buf_hdr = reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer);
+        lp_buf_hdr->mu_flags          = static_cast<uint8_t>(lp_buf_hdr->mu_flags & ~P8_DATA_FLAG_FRAGMENT);
+        lp_buf_hdr->mu_size           = static_cast<uint16_t>(mz_buf_used);
+    }
     mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
 
     return false;

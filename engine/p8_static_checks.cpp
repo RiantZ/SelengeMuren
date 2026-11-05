@@ -31,7 +31,6 @@ static_assert(sizeof(struct s_p8_mtk_svc) % 8 == 0, "s_p8_mtk_svc size must be a
 static_assert(sizeof(struct s_p8_mtk_item_dat) % 8 == 0, "s_p8_mtk_item_dat size must be a multiple of 8 bytes");
 
 static_assert(alignof(struct s_p8_hdr) >= 8, "s_p8_hdr must have at least 8-byte alignment");
-static_assert(alignof(struct s_p8_data_buf_hdr) >= 8, "s_p8_data_buf_hdr must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_batch) >= 8, "s_p8_batch must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_log_item_dat) >= 8, "s_p8_log_item_hdr must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_mtk_svc) >= 8, "s_p8_mtk_svc must have at least 8-byte alignment");
@@ -70,16 +69,14 @@ static_assert(offsetof(struct s_p8_svc_hdr, mu_svc_type) == 1, "s_p8_svc_hdr::mu
 static_assert(offsetof(struct s_p8_svc_hdr, mu_size) == 2, "s_p8_svc_hdr::mu_size offset changed");
 
 // s_p8_data_buf_hdr
-static_assert(sizeof(struct s_p8_data_buf_hdr) == 24, "s_p8_data_buf_hdr wire size changed");
+static_assert(sizeof(struct s_p8_data_buf_hdr) == 16, "s_p8_data_buf_hdr wire size changed");
 static_assert(offsetof(struct s_p8_data_buf_hdr, mu_packet_type) == 0,
               "s_p8_data_buf_hdr::mu_packet_type offset changed");
 static_assert(offsetof(struct s_p8_data_buf_hdr, mu_flags) == 1, "s_p8_data_buf_hdr::mu_flags offset changed");
 static_assert(offsetof(struct s_p8_data_buf_hdr, mu_size) == 2, "s_p8_data_buf_hdr::mu_size offset changed");
 static_assert(offsetof(struct s_p8_data_buf_hdr, mu_thread_id) == 4, "s_p8_data_buf_hdr::mu_thread_id offset changed");
-static_assert(offsetof(struct s_p8_data_buf_hdr, mu_start_time) == 8,
-              "s_p8_data_buf_hdr::mu_start_time offset changed");
-static_assert(offsetof(struct s_p8_data_buf_hdr, mu_stop_time) == 16,
-              "s_p8_data_buf_hdr::mu_stop_time offset changed");
+static_assert(offsetof(struct s_p8_data_buf_hdr, mu_writer_id) == 8, "s_p8_data_buf_hdr::mu_writer_id offset changed");
+static_assert(offsetof(struct s_p8_data_buf_hdr, mu_buf_seq) == 12, "s_p8_data_buf_hdr::mu_buf_seq offset changed");
 
 // s_p8_batch
 static_assert(sizeof(struct s_p8_batch) == 16, "s_p8_batch wire size changed");

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
 #include <latch>
 #include <string>
@@ -23,6 +24,25 @@ std::string make_mem_config(size_t iz_buffers)
     const std::string ls       = std::to_string(lz_bytes);
     return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
            + "\": \"" + ls + "\"}";
+}
+
+// Log through the embedded API, the second writer of the calling thread.
+bool log_emb(const char *ip_format, ...)
+{
+    va_list lo_args;
+    va_start(lo_args, ip_format);
+    const bool lb_sent = p8_log_sent_emb(e_p8_trace0,
+                                         nullptr,
+                                         0,
+                                         static_cast<uint32_t>(__LINE__),
+                                         __FILE__,
+                                         __FUNCTION__,
+                                         0,
+                                         nullptr,
+                                         ip_format,
+                                         &lo_args);
+    va_end(lo_args);
+    return lb_sent;
 }
 } // namespace
 
@@ -229,6 +249,119 @@ TEST_F(c_pull_test, discard_preserves_earlier_records)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a record discarded mid-fragmentation keeps the earlier records of the buffer it started in
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, discard_keeps_earlier_records_of_its_first_buffer)
+{
+    // 3-buffer pool: the short record and the descriptors take two, the long record runs out on the third
+    init_core(make_mem_config(3).c_str());
+    p8_test_enable_buffer_capture();
+
+    bool        lb_short = false;
+    bool        lb_long  = true;
+    std::thread lo_thread(
+        [&lb_short, &lb_long]()
+        {
+            lb_short = p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "short");
+
+            const std::string ls_long(3 * p8_test_get_buffer_size(), 'Z');
+            lb_long = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "%s",
+                                  ls_long.c_str());
+
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+    EXPECT_TRUE(lb_short);
+    EXPECT_FALSE(lb_long);
+    // all buffers but the descriptors' one are back in the pool, so the rollback leaked nothing
+    EXPECT_EQ(p8_test_get_free_buffers_count(), 2u);
+
+    // the short record is still there, in a buffer that no longer looks like a fragment
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 1u);
+    const s_p8_data_buf_hdr *lp_hdr  = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_log_item_dat *lp_item = reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1);
+    EXPECT_EQ(lp_hdr->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+    EXPECT_EQ(static_cast<size_t>(lp_hdr->mu_size), sizeof(s_p8_data_buf_hdr) + lp_item->mu_size);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a discarded record that started right after the tail of a fragmented one keeps that tail intact
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, discard_after_fragment_tail_keeps_the_tail)
+{
+    // 4-buffer pool: descriptors take one, the first record two (16 bytes spill into the second),
+    // the long record starts after that tail, gets the last buffer and still does not fit
+    init_core(make_mem_config(4).c_str());
+    p8_test_enable_buffer_capture();
+
+    bool        lb_first = false;
+    bool        lb_long  = true;
+    std::thread lo_thread(
+        [&lb_first, &lb_long]()
+        {
+            const size_t      lz_buf = p8_test_get_buffer_size();
+            const std::string ls_first(lz_buf - sizeof(s_p8_data_buf_hdr) - sizeof(s_p8_log_item_dat)
+                                           - sizeof(uint16_t) + 16,
+                                       'A');
+            lb_first = p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "%s",
+                                   ls_first.c_str());
+
+            const std::string ls_long(3 * lz_buf, 'Z');
+            lb_long = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "%s",
+                                  ls_long.c_str());
+
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+    EXPECT_TRUE(lb_first);
+    EXPECT_FALSE(lb_long);
+    EXPECT_EQ(p8_test_get_free_buffers_count(), 3u);
+
+    // the first record is whole: its first buffer continues in the second, which holds only the tail
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 2u);
+    const s_p8_data_buf_hdr *lp_head = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_data_buf_hdr *lp_tail = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[1].data());
+    EXPECT_NE(lp_head->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+    EXPECT_EQ(lp_tail->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // with no data, an empty packet goes at start and right after data, then not until the idle interval passes
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -287,7 +420,7 @@ TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
     const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
     ASSERT_EQ(lr_bufs.size(), 1u);
     const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
-    EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
+    EXPECT_GT(lr_batches[1].mu_timestamp, reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_timestamp);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -343,5 +476,50 @@ TEST_F(c_pull_test, early_wake_after_data_sends_nothing)
 
     // the empty packet covers the record, so the server can release it
     const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
-    EXPECT_GT(lr_batches[1].mu_timestamp, lp_hdr->mu_stop_time);
+    EXPECT_GT(lr_batches[1].mu_timestamp, reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_timestamp);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// every writer has its own id, even two writers of one thread, and a fragment's continuation keeps it
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_pull_test, writers_have_their_own_ids)
+{
+    init_core(make_mem_config(16).c_str());
+    p8_test_enable_buffer_capture();
+
+    std::thread lo_thread(
+        []()
+        {
+            // longer than a buffer, so the record continues in a second buffer
+            const std::string ls_long(p8_test_get_buffer_size(), 'L');
+            p8_log_sent(e_p8_trace0,
+                        nullptr,
+                        0,
+                        static_cast<uint32_t>(__LINE__),
+                        __FILE__,
+                        __FUNCTION__,
+                        0,
+                        nullptr,
+                        "%s",
+                        ls_long.c_str());
+            log_emb("embedded");
+            p8_test_drain_writers();
+        });
+    lo_thread.join();
+
+    // the drain takes the newest writer first: the embedded one, then the long record and its continuation
+    const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lr_bufs.size(), 3u);
+    const s_p8_data_buf_hdr *lp_emb  = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_data_buf_hdr *lp_head = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[1].data());
+    const s_p8_data_buf_hdr *lp_tail = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[2].data());
+    ASSERT_NE(lp_head->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
+    EXPECT_EQ(lp_tail->mu_writer_id, lp_head->mu_writer_id);
+    EXPECT_NE(lp_emb->mu_writer_id, lp_head->mu_writer_id);
+    // one thread for both writers, and each writer numbers its own buffers from 0
+    EXPECT_EQ(lp_emb->mu_thread_id, lp_head->mu_thread_id);
+    EXPECT_EQ(lp_emb->mu_buf_seq, 0u);
+    EXPECT_EQ(lp_head->mu_buf_seq, 0u);
+    EXPECT_EQ(lp_tail->mu_buf_seq, 1u);
 }

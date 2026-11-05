@@ -29,7 +29,7 @@ protected:
                                       const struct s_p8_attr_val *ip_attrs,
                                       size_t                      iz_attrs);
 
-    bool rotate_fragment_buffer(uint64_t iu_timestamp);
+    bool rotate_fragment_buffer();
 
     void core_push();
 
@@ -46,12 +46,8 @@ protected:
 
     static size_t serialize_utf8_string(uint8_t *op_dst, size_t iz_avail, const char *ip_str);
 
-    bool copy_fragmented(uint8_t   *&io_dst,
-                         uint8_t   *&io_buf_end,
-                         const void *ip_src,
-                         size_t      iz_len,
-                         uint64_t    iu_timestamp,
-                         size_t     &oz_written);
+    bool
+    copy_fragmented(uint8_t *&io_dst, uint8_t *&io_buf_end, const void *ip_src, size_t iz_len, size_t &oz_written);
 
     cp8_core                           *mp_core = nullptr;
     std::vector<const s_p8_attr_desc *> mo_attr_cache;
@@ -74,6 +70,8 @@ protected:
     // Stable identifier of the owning thread, derived once in the constructor
     // from std::hash<std::thread::id>
     uint32_t          mu_thread_id = 0;
+    uint32_t          mu_writer_id = 0; // from cp8_core::register_writer, goes into every buffer header
+    uint32_t          mu_buf_seq   = 0; // number of the next buffer this writer takes
     kit::c_spin_lock *mp_lock      = nullptr;
 
     // Per-thread dropped-element counters, incremented on the hot path at each
@@ -91,13 +89,13 @@ protected:
 };
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
-#define P8_ENSURE_SPACE(dst, buf_end, needed, timestamp)                                                              \
+#define P8_ENSURE_SPACE(dst, buf_end, needed)                                                                         \
     do                                                                                                                \
     {                                                                                                                 \
         if((dst) + (needed) > (buf_end)) [[unlikely]]                                                                 \
         {                                                                                                             \
             mz_buf_used = static_cast<size_t>((dst) - mp_buffer);                                                     \
-            if(!rotate_fragment_buffer((timestamp)))                                                                  \
+            if(!rotate_fragment_buffer())                                                                             \
             {                                                                                                         \
                 goto lbl_discard;                                                                                     \
             }                                                                                                         \
