@@ -326,6 +326,12 @@ extern "C"
 /// @brief True when a span ID from p8_trc_begin / p8_trc_begin_async is valid
 #define P8_IS_SPAN_VALID(id) (P8_INVALID_SPAN != (uint64_t)(id))
 
+/// @brief Bit set in every span ID from p8_trc_begin_async
+#define P8_ASYNC_SPAN_BIT    (1ull << 63)
+
+/// @brief True when a span ID comes from p8_trc_begin_async
+#define P8_IS_ASYNC_SPAN(id) (P8_ASYNC_SPAN_BIT == ((uint64_t)(id) & P8_ASYNC_SPAN_BIT))
+
 /// @brief Start a span that ends on the same thread
 #define P8TRC_BEGIN(ip_name, iz_attrs, ip_attrs)                                                                      \
     p8_trc_begin((ip_name), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs))
@@ -361,7 +367,8 @@ extern "C"
     /// @param ip_function  [in] source code function name
     /// @param iz_attrs     [in] number of elements in ip_attrs; pass 0 when no attributes
     /// @param ip_attrs     [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
-    /// @return span ID, unique in the process; P8_INVALID_SPAN on failure, check it with P8_IS_SPAN_VALID
+    /// @return span ID, unique in the process, with P8_ASYNC_SPAN_BIT set; P8_INVALID_SPAN on failure, check it
+    /// with P8_IS_SPAN_VALID
     uint64_t p8_trc_begin_async(uint64_t                    iu_parent_id,
                                 const char                 *ip_name,
                                 uint32_t                    iu_line,
