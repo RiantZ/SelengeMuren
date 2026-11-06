@@ -2222,3 +2222,68 @@ TEST_F(c_log_content_test, descriptor_strings_cut_at_max_len_on_utf8_boundary)
                   lo_func.substr(0, P8_SVC_STR_MAX_LEN));
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: attributes keep the record within its 16-bit size
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_log_content_test, record_is_cut_to_fit_its_16_bit_size)
+{
+    p8_attr_id li_attr = p8_attr_register("big_label", e_p8_attr_str);
+    ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
+
+    const std::string lo_arg(65000, 'a');
+    const std::string lo_attr(65000, 'b');
+
+    std::thread lo_thread(
+        [&]()
+        {
+            struct s_p8_attr_val lo_av = {};
+            lo_av.m_id                 = li_attr;
+            lo_av.mp_str               = lo_attr.c_str();
+            p8_log_sent(e_p8_trace0, nullptr, 0, 200, __FILE__, __FUNCTION__, 1, &lo_av, "%s", lo_arg.c_str());
+            p8_log_sent(e_p8_trace0, nullptr, 0, 201, __FILE__, __FUNCTION__, 0, nullptr, "next %d", 5);
+        });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 2u);
+
+    // the largest record whose size padded to 8 fits mu_size; the argument fits whole, the attribute takes the rest
+    const size_t lz_max  = UINT16_MAX & ~static_cast<size_t>(7u);
+    const size_t lz_args = sizeof(uint16_t) + lo_arg.size();
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, lz_max);
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_args_size, lz_args);
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_attrs_count, 1u);
+
+    size_t lz_off = lz_args + sizeof(p8_attr_id);
+    EXPECT_EQ(read_string_len(lo_items[0].mo_payload, lz_off),
+              lz_max - sizeof(s_p8_log_item_dat) - lz_args - sizeof(p8_attr_id) - sizeof(uint16_t));
+
+    // the stream stays in step: the next record is found right after the cut one
+    EXPECT_EQ(lo_items[1].mo_hdr.mu_hash, P8_GET_LOG_HASH(__FILE__, 201));
+}
+
+TEST_F(c_log_content_test, attribute_count_stops_at_255)
+{
+    p8_attr_id li_attr = p8_attr_register("many_u64", e_p8_attr_u64);
+    ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
+
+    std::vector<struct s_p8_attr_val> lo_attrs(300);
+    for(struct s_p8_attr_val &lr_attr : lo_attrs)
+    {
+        lr_attr.m_id   = li_attr;
+        lr_attr.mu_u64 = 1;
+    }
+
+    std::thread lo_thread(
+        [&]()
+        { p8_log_sent(e_p8_trace0, nullptr, 0, 400, __FILE__, __FUNCTION__, lo_attrs.size(), lo_attrs.data(), "n"); });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_attrs_count, 255u);
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_size,
+              expected_item_size(sizeof(s_p8_log_item_dat) + 255 * (sizeof(p8_attr_id) + sizeof(uint64_t))));
+}

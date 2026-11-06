@@ -165,104 +165,97 @@ s_p8_drop_stats cp8_tls_writer::pull_dropped()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-s_p8_attrs_result cp8_tls_writer::serialize_attrs(uint8_t                    *op_dst,
-                                                  const uint8_t              *ip_buf_end,
+s_p8_attrs_result cp8_tls_writer::serialize_attrs(uint8_t                   *&io_dst,
+                                                  uint8_t                   *&io_buf_end,
+                                                  size_t                      iz_record,
                                                   const struct s_p8_attr_val *ip_attrs,
                                                   size_t                      iz_attrs)
 {
-    uint8_t  lu_attrs_written = 0;
-    uint8_t *lp_dst           = op_dst;
+    s_p8_attrs_result lo_result = { true, 0, 0 };
 
-    for(size_t lz_i = 0; ip_attrs && lz_i < iz_attrs; ++lz_i)
+    for(size_t lz_i = 0; ip_attrs && lz_i < iz_attrs && lo_result.mu_count < UINT8_MAX; ++lz_i)
     {
-        p8_attr_id li_id  = ip_attrs[lz_i].m_id;
-        size_t     lz_idx = static_cast<size_t>(li_id);
+        const p8_attr_id li_id   = ip_attrs[lz_i].m_id;
+        const size_t     lz_idx  = static_cast<size_t>(li_id);
+        const size_t     lz_used = iz_record + lo_result.mz_bytes;
+        const size_t     lz_room = (lz_used < P8_MAX_RECORD_SIZE) ? P8_MAX_RECORD_SIZE - lz_used : 0;
+        const void      *lp_val  = &ip_attrs[lz_i].mu_u64;
+        size_t           lz_len  = sizeof(uint64_t);
+        size_t           lz_size = sizeof(p8_attr_id) + sizeof(uint64_t);
+        uint16_t         lu_len  = 0;
+        bool             lb_str  = false;
 
         if(li_id < 0)
         {
-            // TODO: print error that attr is skipped
             continue;
         }
 
         if(lz_idx >= mo_attr_cache.size() || !mo_attr_cache[lz_idx])
         {
             mp_core->sync_attr_cache(mo_attr_cache);
-
             if(lz_idx >= mo_attr_cache.size() || !mo_attr_cache[lz_idx])
             {
-                // TODO: print error that attr is skipped
                 continue;
             }
         }
 
-        const s_p8_attr_desc *lp_attr_desc = mo_attr_cache[lz_idx];
-
-        // Type is not serialized here — it will be sent from the core with the descriptor.
-        if(lp_attr_desc->me_type == e_p8_attr_str)
+        if(e_p8_attr_str == mo_attr_cache[lz_idx]->me_type)
         {
-            size_t lz_remain = static_cast<size_t>(ip_buf_end - lp_dst);
-            size_t lz_hdr_sz = sizeof(p8_attr_id);
-            if(lz_remain < lz_hdr_sz)
+            const char *lp_str = ip_attrs[lz_i].mp_str;
+            if(lz_room < sizeof(p8_attr_id) + sizeof(uint16_t))
             {
-                break;
+                continue;
             }
 
-            memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
-            lp_dst += sizeof(p8_attr_id);
-
-            size_t lz_written
-                = serialize_utf8_string(lp_dst, static_cast<size_t>(ip_buf_end - lp_dst), ip_attrs[lz_i].mp_str);
-            if(lz_written == 0)
+            // a string longer than the room left is cut on a UTF-8 boundary
+            lz_len = lp_str ? strlen(lp_str) : 0;
+            if(lz_len > lz_room - sizeof(p8_attr_id) - sizeof(uint16_t))
             {
-                lp_dst -= lz_hdr_sz;
-                break;
+                lz_len = p8_cut_utf8(lp_str, lz_room - sizeof(p8_attr_id) - sizeof(uint16_t));
             }
-            lp_dst += lz_written;
+            lu_len  = static_cast<uint16_t>(lz_len);
+            lp_val  = lp_str;
+            lz_size = sizeof(p8_attr_id) + sizeof(uint16_t) + lz_len;
+            lb_str  = true;
+        }
+        else if(lz_room < lz_size)
+        {
+            continue;
+        }
+
+        if(lz_size <= static_cast<size_t>(io_buf_end - io_dst)) [[likely]]
+        {
+            // fixed sizes for the number, so the copies compile to plain stores
+            memcpy(io_dst, &li_id, sizeof(p8_attr_id));
+            if(lb_str)
+            {
+                memcpy(io_dst + sizeof(p8_attr_id), &lu_len, sizeof(lu_len));
+                if(lz_len)
+                {
+                    memcpy(io_dst + sizeof(p8_attr_id) + sizeof(lu_len), lp_val, lz_len);
+                }
+            }
+            else
+            {
+                memcpy(io_dst + sizeof(p8_attr_id), &ip_attrs[lz_i].mu_u64, sizeof(uint64_t));
+            }
+            io_dst += lz_size;
         }
         else
         {
-            size_t lz_needed = sizeof(p8_attr_id) + sizeof(uint64_t);
-            if(lp_dst + lz_needed > ip_buf_end)
+            size_t lz_put = 0;
+            if(!copy_fragmented(io_dst, io_buf_end, &li_id, sizeof(p8_attr_id), lz_put)
+               || (lb_str && !copy_fragmented(io_dst, io_buf_end, &lu_len, sizeof(lu_len), lz_put))
+               || !copy_fragmented(io_dst, io_buf_end, lp_val, lz_len, lz_put))
             {
+                lo_result.mb_done = false;
                 break;
             }
-
-            memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
-            lp_dst += sizeof(p8_attr_id);
-            memcpy(lp_dst, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t));
-            lp_dst += sizeof(uint64_t);
         }
 
-        lu_attrs_written++;
+        lo_result.mz_bytes += lz_size;
+        ++lo_result.mu_count;
     }
 
-    s_p8_attrs_result lo_result;
-    lo_result.mu_count = lu_attrs_written;
-    lo_result.mz_bytes = static_cast<size_t>(lp_dst - op_dst);
     return lo_result;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-size_t cp8_tls_writer::serialize_utf8_string(uint8_t *op_dst, size_t iz_avail, const char *ip_str)
-{
-    uint16_t lu_len = 0;
-
-    if(ip_str)
-    {
-        size_t lz_slen = strlen(ip_str);
-        lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
-    }
-
-    if(sizeof(lu_len) + lu_len > iz_avail)
-    {
-        return 0;
-    }
-
-    memcpy(op_dst, &lu_len, sizeof(lu_len));
-    if(lu_len)
-    {
-        memcpy(op_dst + sizeof(lu_len), ip_str, lu_len);
-    }
-
-    return sizeof(lu_len) + lu_len;
 }
