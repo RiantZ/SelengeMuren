@@ -377,7 +377,7 @@ bool cp8_core::init_header(const struct s_p8_config *ip_config)
     uint32_t lu_endian         = 0x1;
     mo_hdr.mu_is_big_endian    = (*reinterpret_cast<uint8_t *>(&lu_endian) == 0) ? 1 : 0;
 
-    mo_hdr.mi_utc_sec_offset   = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
+    mo_hdr.mi_utc_sec_offset   = static_cast<int32_t>(kit::get_utc_offset_seconds());
     mo_hdr.mu_size             = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
     mo_hdr.mu_process_id       = kit::get_process_id();
     mo_hdr.mu_system_time      = kit::get_system_time();
