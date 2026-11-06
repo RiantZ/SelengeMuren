@@ -82,8 +82,8 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `send_hello_d_no_attrs` | 28.9 ns | 1 000 000 |
-| `send_hello_d_3_attrs` (str + i64 + f64) | 40.1 ns | 1 000 000 |
+| `send_hello_d_no_attrs` | 19.3 ns | 1 000 000 |
+| `send_hello_d_3_attrs` (str + i64 + f64) | 30.7 ns | 1 000 000 |
 
 `full_cycle` throughput (init + emit + release) through the in-memory null sink,
 1 000 000 iterations per thread. Numbers are aggregated over 25 runs of the test
@@ -91,12 +91,12 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 29.7 ns | 40.8 ns | 5.73 ns | 33.6 M calls/s |
-| 2 | 2 000 000 | 9.9 ns  | 10.3 ns | 0.23 ns | 101.2 M calls/s |
-| 4 | 4 000 000 | 5.4 ns  | 5.7 ns  | 0.18 ns | 186.3 M calls/s |
-| 8 | 8 000 000 | 4.3 ns  | 4.8 ns  | 0.20 ns | 234.8 M calls/s |
+| 1 | 1 000 000 | 25.9 ns | 31.7 ns | 2.61 ns | 38.6 M calls/s |
+| 2 | 2 000 000 | 8.9 ns  | 9.0 ns  | 0.10 ns | 112.6 M calls/s |
+| 4 | 4 000 000 | 4.9 ns  | 5.0 ns  | 0.07 ns | 205.3 M calls/s |
+| 8 | 8 000 000 | 4.2 ns  | 4.5 ns  | 0.11 ns | 237.0 M calls/s |
 
-Under backpressure the single-thread run is the least stable (stdev ≈ 5.7 ns, p95 well
+Under backpressure the single-thread run is the least stable (stdev ≈ 2.6 ns, p95 well
 above the median): with one producer and one worker they either keep pace or the
 producer briefly blocks on the worker's recycle rate, run to run. From 2 threads up the
 worker stays saturated and the spread collapses to a few percent.
@@ -116,10 +116,34 @@ per thread, aggregated over 25 runs:
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 11.1 ns | 11.8 ns | 0.30 ns | 89.8 M calls/s |
-| 2 | 2 000 000 | 5.9 ns  | 6.3 ns  | 0.20 ns | 171.1 M calls/s |
-| 4 | 4 000 000 | 3.0 ns  | 3.4 ns  | 0.26 ns | 328.7 M calls/s |
-| 8 | 8 000 000 | 2.0 ns  | 2.2 ns  | 0.15 ns | 513.6 M calls/s |
+| 1 | 1 000 000 | 13.7 ns | 15.0 ns | 1.31 ns | 73.2 M calls/s |
+| 2 | 2 000 000 | 5.7 ns  | 6.3 ns  | 0.25 ns | 175.6 M calls/s |
+| 4 | 4 000 000 | 3.2 ns  | 3.3 ns  | 0.05 ns | 315.5 M calls/s |
+| 8 | 8 000 000 | 2.1 ns  | 2.2 ns  | 0.03 ns | 477.1 M calls/s |
+
+#### Traces
+
+Run the trace benchmarks with `--gtest_filter="*c_trc_perf*" --gtest_also_run_disabled_tests`.
+One call is a whole span: `p8_trc_begin` + `p8_trc_end`.
+
+Single-thread span latency (`c_trc_perf_test`, 32 batches x 1 000 000 iterations, median ns/call):
+
+| Test | Per call | Iterations |
+|------|----------|------------|
+| `begin_end_no_attrs` | 29.8 ns | 1 000 000 |
+| `begin_end_3_attrs` (str + i64 + f64) | 41.8 ns | 1 000 000 |
+
+`full_cycle` throughput (init + emit + release) through the in-memory null sink,
+1 000 000 spans per thread, aggregated over 25 runs:
+
+| Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
+|---------|-------------|----------------|-------------|-------|---------------------|
+| 1 | 1 000 000 | 40.7 ns | 56.8 ns | 8.51 ns | 24.6 M calls/s |
+| 2 | 2 000 000 | 15.0 ns | 16.1 ns | 1.08 ns | 66.8 M calls/s |
+| 4 | 4 000 000 | 8.1 ns  | 8.4 ns  | 0.17 ns | 123.4 M calls/s |
+| 8 | 8 000 000 | 5.5 ns  | 5.6 ns  | 0.15 ns | 183.2 M calls/s |
+
+As with logs, the single-thread run is the least stable (stdev ≈ 8.5 ns, p95 well above the median).
 
 ### Profiling with Tracy
 

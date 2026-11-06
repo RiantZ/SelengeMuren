@@ -371,6 +371,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     size_t             lz_args_written  = 0;
     size_t             lz_attrs_written = 0;
     uint8_t            lu_attrs_count   = 0;
+    s_p8_attrs_result  lo_attrs         = {};
     size_t             lz_frag_commit   = 0;
     uint16_t           lu_mod_id        = 0xFFFF;
     enum e_p8_level    le_min           = e_p8_trace0;
@@ -575,54 +576,17 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
     lp_hdr->mu_args_size = static_cast<uint16_t>(lz_args_written);
 
-    // serialize attributes inline with fragmentation support
-    for(size_t lz_i = 0; ip_attrs && lz_i < iz_attrs; ++lz_i)
+    // serialize attributes with fragmentation support
+    if(ip_attrs && iz_attrs)
     {
-        p8_attr_id li_id  = ip_attrs[lz_i].m_id;
-        size_t     lz_idx = static_cast<size_t>(li_id);
-
-        if(li_id < 0)
+        lo_attrs
+            = serialize_attrs(lp_dst, lp_buf_end, sizeof(s_p8_log_item_dat) + lz_args_written, ip_attrs, iz_attrs);
+        if(!lo_attrs.mb_done) [[unlikely]]
         {
-            continue;
+            goto lbl_discard;
         }
-
-        if(lz_idx >= mo_attr_cache.size() || !mo_attr_cache[lz_idx])
-        {
-            mp_core->sync_attr_cache(mo_attr_cache);
-            if(lz_idx >= mo_attr_cache.size() || !mo_attr_cache[lz_idx])
-            {
-                continue;
-            }
-        }
-
-        const s_p8_attr_desc *lp_attr_desc = mo_attr_cache[lz_idx];
-
-        if(lp_attr_desc->me_type == e_p8_attr_type::e_p8_attr_str)
-        {
-            P8_WRITE_PIECE(lp_dst, lp_buf_end, &li_id, sizeof(p8_attr_id), lz_attrs_written);
-
-            const char *lp_str = ip_attrs[lz_i].mp_str;
-            uint16_t    lu_len = 0;
-            if(lp_str)
-            {
-                size_t lz_slen = strlen(lp_str);
-                lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
-            }
-
-            P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_len, sizeof(lu_len), lz_attrs_written);
-
-            if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_attrs_written))
-            {
-                goto lbl_discard;
-            }
-        }
-        else
-        {
-            P8_WRITE_PIECE(lp_dst, lp_buf_end, &li_id, sizeof(p8_attr_id), lz_attrs_written);
-            P8_WRITE_PIECE(lp_dst, lp_buf_end, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t), lz_attrs_written);
-        }
-
-        lu_attrs_count++;
+        lz_attrs_written = lo_attrs.mz_bytes;
+        lu_attrs_count   = lo_attrs.mu_count;
     }
 
     // Pad the record to 8 bytes so the next one starts 8-aligned: with no gaps the write offset is congruent to the

@@ -23,7 +23,7 @@ extern "C"
 // WARNING: THIS IS THE FIRST BYTE IN EVERY PACKET
 #define P8_PACKET_MAIN          0 // hello/handshake packet carrying s_p8_hdr (first packet on a connection)
 #define P8_PACKET_LOGS          1 // log records buffer (s_p8_data_buf_hdr + s_p8_log_item_dat stream)
-#define P8_PACKET_TRACES        2 // distributed-trace spans buffer
+#define P8_PACKET_TRACES        2 // trace records buffer (s_p8_data_buf_hdr + s_p8_trc_*_dat stream)
 #define P8_PACKET_METRICS       3 // metric samples buffer
 #define P8_PACKET_SERVICE       4 // service descriptors buffer (s_p8_svc_hdr entries: logs, attrs, threads, ...)
 #define P8_PACKET_BATCH         5 // opens a data batch (s_p8_batch), empty ones included
@@ -46,9 +46,12 @@ extern "C"
 #define P8_SVC_TYPE_LOG_DESC    0x01 // log descriptor: hash, line, file, function, format, var-arg types
 #define P8_SVC_TYPE_ATTR        0x02 // attribute descriptor: id, value type, name
 #define P8_SVC_TYPE_THREAD      0x03 // thread descriptor: OS thread id, thread name
-#define P8_SVC_TYPE_TRACE       0x04 // trace descriptor: trace id, parent id, line, file, function, args format
+#define P8_SVC_TYPE_TRACE       0x04 // span descriptor: s_p8_trc_item_svc
 #define P8_SVC_TYPE_MTK         0x05 // metric descriptor: id, flags, name, description, unit, min/max, on-state
 #define P8_SVC_TYPE_MODULE      0x06 // module descriptor: handle, verbosity, name
+#define P8_SVC_TYPE_FILE_NAME   0x07 // source file name: s_p8_str_svc
+#define P8_SVC_TYPE_FUNC_NAME   0x08 // function name: s_p8_str_svc
+#define P8_SVC_TYPE_SPAN_NAME   0x09 // span name: s_p8_str_svc
 
 // Metric descriptor flags (s_p8_mtk_svc.mu_flags) carried in a P8_SVC_TYPE_MTK entry.
 #define P8_MTK_FLAG_ON          (1 << 0) // metric initial enabled state (s_p8_mtk_base.mb_on)
@@ -87,6 +90,11 @@ extern "C"
 #define P8_LOG_ARG_TYPE_INTMAX  0x0D // intmax_t (largest signed integer)
 #define P8_LOG_ARG_TYPE_LDOUBLE 0x0E // long double
 
+// Record types (mu_type) inside a P8_PACKET_TRACES buffer
+#define P8_TRC_ITEM_BEGIN       0x01 // s_p8_trc_begin_dat from p8_trc_begin
+#define P8_TRC_ITEM_BEGIN_ASYNC 0x02 // s_p8_trc_begin_dat from p8_trc_begin_async
+#define P8_TRC_ITEM_END         0x03 // s_p8_trc_end_dat
+
     // Base hello message from P8, the first packet to be sent
     // WARNING: the header is always in little-endian!
     struct s_p8_hdr
@@ -117,6 +125,17 @@ extern "C"
         uint8_t  mu_packet_type; // P8_PACKET_SERVICE
         uint8_t  mu_svc_type;    // P8_SVC_TYPE_XXX
         uint16_t mu_size;        // size including header
+    };
+
+    // A string sent once; descriptors refer to it by mu_hash
+    struct s_p8_str_svc
+    {
+        s_p8_svc_hdr ms_hdr;     // service item header, 4; P8_SVC_TYPE_FILE_NAME / _FUNC_NAME / _SPAN_NAME
+        uint16_t     mu_len;     // string length in bytes, no NUL, at most P8_SVC_STR_MAX_LEN
+        uint16_t     mu_padding; // alignment, 0
+        uint64_t     mu_hash;    // XXH3 of the string bytes
+        //* Serialized string: mu_len bytes, UTF-8
+        //* padding to align total size on 8 bytes boundary
     };
 
     // Serialized representation of s_p8_attr_desc
@@ -164,7 +183,7 @@ extern "C"
     // DATA: Logs, Metric, Traces items
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    // Opens every data batch; see doc/live_stream_ordering.md, 3.1
+    // Opens every data batch
     struct s_p8_batch
     {
         uint8_t  mu_packet_type; // P8_PACKET_BATCH
@@ -174,7 +193,7 @@ extern "C"
         uint64_t mu_timestamp;   // buffers of later batches start at or after it
     };
 
-    // Header of EVERY data buffer: logs, traces, metrics
+    // Header of EVERY data buffer: logs, traces, metrics, every buffer was emitted by signle thread!
     struct s_p8_data_buf_hdr
     {
         uint8_t  mu_packet_type; // P8_PACKET_LOGS or P8_PACKET_TRACES or P8_PACKET_METRICS
@@ -204,7 +223,7 @@ extern "C"
     {
         uint64_t mu_hash;      // log descriptor hash (key into descriptor tree)
         uint64_t mu_timestamp; // monotonic clock timestamp
-        uint64_t mu_trace_id;  // distributed trace correlation ID
+        uint64_t mu_trace_id;  // trace correlation ID
 
         // 64 bits
         uint32_t mu_thread_id; // OS thread ID
@@ -223,6 +242,49 @@ extern "C"
         //* Serialized attributes [p8_attr_id + data][...]
         //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b
         // alignement
+    };
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // TRACES
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // Span descriptor (P8_SVC_TYPE_TRACE), sent once per call site; its strings come as s_p8_str_svc entries
+    struct s_p8_trc_item_svc
+    {
+        s_p8_svc_hdr ms_hdr;       // service item header, 4
+        uint32_t     mu_line;      // source line number
+        uint64_t     mu_hash;      // span descriptor hash, the key s_p8_trc_begin_dat::mu_hash refers to
+        uint64_t     mu_file_hash; // P8_SVC_TYPE_FILE_NAME string
+        uint64_t     mu_func_hash; // P8_SVC_TYPE_FUNC_NAME string
+        uint64_t     mu_name_hash; // P8_SVC_TYPE_SPAN_NAME string
+    };
+
+    // Timestamp, span ID, size, type and thread ID sit at the same offsets in every trace record
+
+    // Start of a span: P8_TRC_ITEM_BEGIN or P8_TRC_ITEM_BEGIN_ASYNC
+    struct s_p8_trc_begin_dat
+    {
+        uint64_t mu_timestamp;   // monotonic clock timestamp
+        uint64_t mu_span_id;     // span ID, unique in the process
+        uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
+        uint8_t  mu_type;        // P8_TRC_ITEM_BEGIN or P8_TRC_ITEM_BEGIN_ASYNC
+        uint8_t  mu_attrs_count; // number of serialized attributes
+        uint32_t mu_thread_id;   // id of calling thread
+        uint64_t mu_hash;        // span descriptor hash (key into descriptor tree)
+        uint64_t mu_parent_id;   // parent span ID; 0 - a new trace
+        //* Serialized attributes [p8_attr_id + data][...]
+        //* padding to tail to 8 bytes boundary
+    };
+
+    // End of a span started by either begin
+    struct s_p8_trc_end_dat
+    {
+        uint64_t mu_timestamp; // monotonic clock timestamp
+        uint64_t mu_span_id;   // span ID returned by p8_trc_begin / p8_trc_begin_async
+        uint16_t mu_size;      // item size in bytes, always sizeof(s_p8_trc_end_dat)
+        uint8_t  mu_type;      // P8_TRC_ITEM_END
+        uint8_t  mu_padding;   // alignment, 0
+        uint32_t mu_thread_id; // id of calling thread
     };
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

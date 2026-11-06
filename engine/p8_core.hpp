@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #define P8_CORE_ACQUIRE_TIMEOUT_MS     100
@@ -40,6 +41,9 @@
 
 // While idle, the worker sends an empty batch packet this often, so the server sees the stream alive.
 #define P8_CORE_IDLE_BATCH_INTERVAL_MS 5000
+
+// Span IDs a trace writer takes from the core at once, so the shared counter is touched once per block
+#define P8_CORE_SPAN_ID_BLOCK          65536
 
 // iz_len moved back to the start of the UTF-8 sequence it falls in, so a cut string stays valid UTF-8;
 // ip_str must hold more than iz_len bytes
@@ -153,6 +157,17 @@ public:
                                     const char *ip_function,
                                     const char *ip_format);
 
+    // span descriptors: serialize a call site and its strings once per process. Waits for a free buffer when the
+    // service buffer is full, so call it without locks held; false only when no buffer comes (shutdown)
+    bool resolve_trc_desc(uint64_t    iu_hash,
+                          const char *ip_file,
+                          uint32_t    iu_line,
+                          const char *ip_function,
+                          const char *ip_name);
+
+    // span IDs: the first of P8_CORE_SPAN_ID_BLOCK IDs that are unique in the process
+    uint64_t reserve_span_ids();
+
     // non-copyable, non-movable
     cp8_core(const cp8_core &)            = delete;
     cp8_core &operator=(const cp8_core &) = delete;
@@ -224,6 +239,18 @@ private:
                                      const uint8_t              *ip_attr_blob,
                                      size_t                      iz_attr_bytes,
                                      uint8_t                     iu_attr_count);
+    // s_p8_str_svc entry, written once per hash in io_sent
+    bool serialize_str(uint8_t                       iu_svc_type,
+                       const char                   *ip_str,
+                       std::unordered_set<uint64_t> &io_sent,
+                       uint64_t                     &ou_hash,
+                       std::unique_lock<std::mutex> &io_lock);
+    bool serialize_trc_desc(uint64_t                      iu_hash,
+                            uint32_t                      iu_line,
+                            uint64_t                      iu_file_hash,
+                            uint64_t                      iu_func_hash,
+                            uint64_t                      iu_name_hash,
+                            std::unique_lock<std::mutex> &io_lock);
 
     bool                  mb_initialized = false;
     std::atomic<uint32_t> mu_ref_count { 1 };
@@ -286,6 +313,17 @@ private:
     // elements are full. Each entry inside a buffer is 8-byte aligned.
     kit::c_lst<s_p8_svc_buf> mo_svc_buffers { 8 };
     std::mutex               mo_svc_mutex;
+
+    // hashes of the span call sites and strings already serialized; the mutex is held while their entries wait for a
+    // service buffer, so none is sent twice (lock order: trc desc -> svc)
+    std::unordered_set<uint64_t> mo_trc_descs;
+    std::unordered_set<uint64_t> mo_file_names;
+    std::unordered_set<uint64_t> mo_func_names;
+    std::unordered_set<uint64_t> mo_span_names;
+    std::mutex                   mo_trc_desc_mutex;
+
+    // start of the next block of span IDs; IDs begin at 1 because 0 means "no span"
+    std::atomic<uint64_t> mu_span_id_seq { 1 };
 
     // TLS writer registry: intrusive doubly-linked list of all live writers.
     // Lock ordering: mo_writers_lock -> writer->mp_lock (never reverse).

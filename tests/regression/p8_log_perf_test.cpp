@@ -98,27 +98,33 @@ static void report_drops(const s_p8_drop_stats &ir_drops)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// on a new thread: a writer the main thread kept from an earlier test still writes to that test's core
 static void run_batches(const std::function<void(uint32_t)> &ir_call, std::vector<double> &or_samples_ns)
 {
-    for(uint32_t lu_w = 0; lu_w < lu_warmup_iters; ++lu_w)
-    {
-        ir_call(lu_w);
-    }
-
-    or_samples_ns.clear();
-    or_samples_ns.reserve(lu_batch_count);
-
-    for(uint32_t lu_b = 0; lu_b < lu_batch_count; ++lu_b)
-    {
-        const auto lo_start = std::chrono::steady_clock::now();
-        for(uint32_t lu_i = 0; lu_i < lu_batch_iters; ++lu_i)
+    std::thread lo_thread(
+        [&]()
         {
-            ir_call(lu_i);
-        }
-        const auto lo_end = std::chrono::steady_clock::now();
-        const auto lo_dt  = std::chrono::duration_cast<std::chrono::nanoseconds>(lo_end - lo_start).count();
-        or_samples_ns.push_back(static_cast<double>(lo_dt) / static_cast<double>(lu_batch_iters));
-    }
+            for(uint32_t lu_w = 0; lu_w < lu_warmup_iters; ++lu_w)
+            {
+                ir_call(lu_w);
+            }
+
+            or_samples_ns.clear();
+            or_samples_ns.reserve(lu_batch_count);
+
+            for(uint32_t lu_b = 0; lu_b < lu_batch_count; ++lu_b)
+            {
+                const auto lo_start = std::chrono::steady_clock::now();
+                for(uint32_t lu_i = 0; lu_i < lu_batch_iters; ++lu_i)
+                {
+                    ir_call(lu_i);
+                }
+                const auto lo_end = std::chrono::steady_clock::now();
+                const auto lo_dt  = std::chrono::duration_cast<std::chrono::nanoseconds>(lo_end - lo_start).count();
+                or_samples_ns.push_back(static_cast<double>(lo_dt) / static_cast<double>(lu_batch_iters));
+            }
+        });
+    lo_thread.join();
 }
 } // namespace
 

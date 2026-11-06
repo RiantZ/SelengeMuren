@@ -261,7 +261,7 @@ extern "C"
     /// @brief Function for internal usage, please use macros P8TRC, P8DBG, etc. instead.
     /// @param ie_level [in] log level
     /// @param ip_module [in] module
-    /// @param iu_trace_id [in] distributed trace identifier that correlates this log record; pass 0 when
+    /// @param iu_trace_id [in] trace identifier that correlates this log record; pass 0 when
     ///                         the log is not associated with any trace
     /// @param iu_line [in] source code line index
     /// @param ip_file [in] source code file name
@@ -288,7 +288,7 @@ extern "C"
     /// @brief Function for embedding into another logger
     /// @param ie_level [in] log level
     /// @param ip_module [in] module
-    /// @param iu_trace_id [in] distributed trace identifier that correlates this log record; pass 0 when
+    /// @param iu_trace_id [in] trace identifier that correlates this log record; pass 0 when
     ///                         the log is not associated with any trace
     /// @param iu_line [in] source code line index
     /// @param ip_file [in] source code file name
@@ -317,109 +317,96 @@ extern "C"
 
 // TODO: add condition MACRO to switch off traces
 
-/// @brief Start a trace
-#define P8TRC_BEGIN(iu_parent_id, iz_attrs, ip_attrs, ip_fmt, ...)                                                    \
-    p8_trc_begin((iu_parent_id),                                                                                      \
-                 (uint32_t)__LINE__,                                                                                  \
-                 __FILE__,                                                                                            \
-                 __FUNCTION__,                                                                                        \
-                 (iz_attrs),                                                                                          \
-                 (ip_attrs),                                                                                          \
-                 (ip_fmt),                                                                                            \
-                 ##__VA_ARGS__)
+/// @brief Span ID of a failed begin
+#define P8_INVALID_SPAN      0ull
 
-/// @brief End a trace by its trace ID.
-#define P8TRC_END(iu_trace_id) p8_trc_end(iu_trace_id)
+/// @brief Parent span ID of a span that starts a new trace
+#define P8_NO_PARENT_SPAN    0ull
 
-    /// @brief Start a trace span. For internal usage — prefer P8TRC_BEGIN / P8TRC_SCOPE macros.
-    /// @param iu_parent_trace_id [in] parent span ID for nested traces; pass 0 for a root span
-    /// @param iu_line            [in] source code line index
-    /// @param ip_file            [in] source code file name
-    /// @param ip_function        [in] source code function name
-    /// @param iz_attrs           [in] number of elements in ip_attrs; pass 0 when no attributes
-    /// @param ip_attrs           [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
-    /// @param ip_function_args   [in] printf-style format string describing call arguments; may be nullptr
-    /// @param ...                [in] arguments for ip_function_args format string
-    /// @return assigned trace ID (non-zero on success, 0 on failure)
-    uint64_t p8_trc_begin(uint64_t                    iu_parent_trace_id,
+/// @brief True when a span ID from p8_trc_begin / p8_trc_begin_async is valid
+#define P8_IS_SPAN_VALID(id) (P8_INVALID_SPAN != (uint64_t)(id))
+
+/// @brief Start a span that ends on the same thread
+#define P8TRC_BEGIN(ip_name, iz_attrs, ip_attrs)                                                                      \
+    p8_trc_begin((ip_name), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs))
+
+/// @brief Start a span that may end on any thread
+#define P8TRC_BEGIN_ASYNC(iu_parent_id, ip_name, iz_attrs, ip_attrs)                                                  \
+    p8_trc_begin_async((iu_parent_id), (ip_name), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs))
+
+/// @brief End a span by its ID
+#define P8TRC_END(iu_span_id) p8_trc_end(iu_span_id)
+
+    /// @brief Start a span that ends on the same thread; its parent is the innermost open span of this thread.
+    /// For internal usage — prefer P8TRC_BEGIN / P8TRC_SCOPE macros.
+    /// @param ip_name     [in] span name; the same at every call from one source line, the first one is sent
+    /// @param iu_line     [in] source code line index
+    /// @param ip_file     [in] source code file name
+    /// @param ip_function [in] source code function name
+    /// @param iz_attrs    [in] number of elements in ip_attrs; pass 0 when no attributes
+    /// @param ip_attrs    [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
+    /// @return span ID, unique in the process; P8_INVALID_SPAN on failure, check it with P8_IS_SPAN_VALID
+    uint64_t p8_trc_begin(const char                 *ip_name,
                           uint32_t                    iu_line,
                           const char                 *ip_file,
                           const char                 *ip_function,
                           size_t                      iz_attrs,
-                          const struct s_p8_attr_val *ip_attrs,
-                          const char                 *ip_function_args,
-                          ...);
+                          const struct s_p8_attr_val *ip_attrs);
 
-    /// @brief Start a trace span, designed to be embedded into existing function with variable arguments
-    /// @param iu_parent_trace_id [in] parent span ID for nested traces; pass 0 for a root span
-    /// @param iu_line            [in] source code line index
-    /// @param ip_file            [in] source code file name
-    /// @param ip_function        [in] source code function name
-    /// @param iz_attrs           [in] number of elements in ip_attrs; pass 0 when no attributes
-    /// @param ip_attrs           [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
-    /// @param ip_function_args   [in] printf-style format string describing call arguments; may be nullptr
-    /// @param ip_va_list         [in] variable arguments list
-    /// @return assigned trace ID (non-zero on success, 0 on failure)
-    uint64_t p8_trc_begin_emb(uint64_t                    iu_parent_trace_id,
-                              uint32_t                    iu_line,
-                              const char                 *ip_file,
-                              const char                 *ip_function,
-                              size_t                      iz_attrs,
-                              const struct s_p8_attr_val *ip_attrs,
-                              const char                 *ip_function_args,
-                              va_list                    *ip_va_list);
+    /// @brief Start a span that may end on any thread. For internal usage — prefer P8TRC_BEGIN_ASYNC macro.
+    /// @param iu_parent_id [in] parent span ID from any thread; pass P8_NO_PARENT_SPAN to start a new trace
+    /// @param ip_name      [in] span name; the same at every call from one source line, the first one is sent
+    /// @param iu_line      [in] source code line index
+    /// @param ip_file      [in] source code file name
+    /// @param ip_function  [in] source code function name
+    /// @param iz_attrs     [in] number of elements in ip_attrs; pass 0 when no attributes
+    /// @param ip_attrs     [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
+    /// @return span ID, unique in the process; P8_INVALID_SPAN on failure, check it with P8_IS_SPAN_VALID
+    uint64_t p8_trc_begin_async(uint64_t                    iu_parent_id,
+                                const char                 *ip_name,
+                                uint32_t                    iu_line,
+                                const char                 *ip_file,
+                                const char                 *ip_function,
+                                size_t                      iz_attrs,
+                                const struct s_p8_attr_val *ip_attrs);
 
-    /// @brief End a trace span. For internal usage — prefer P8TRC_SCOPE macro (RAII) or P8TRC_END.
-    /// @param iu_trace_id [in] trace ID returned by p8_trc_begin; passing 0 is a no-op
-    /// @return true - success, false - failure
-    bool p8_trc_end(uint64_t iu_trace_id);
+    /// @brief End a span. A span of p8_trc_begin ends on its own thread, otherwise it stays the parent of the
+    /// next spans there; a span of p8_trc_begin_async may end on any thread.
+    /// @param iu_span_id [in] span ID returned by begin; passing P8_INVALID_SPAN is a no-op
+    void p8_trc_end(uint64_t iu_span_id);
 
 #ifdef __cplusplus
 } // extern "C"
 
-    /// @brief Declare a named cp8_trace_guard with structured attributes.
-    #define P8TRC_SCOPE(var_name, iu_parent_id, iz_attrs, ip_attrs, ip_fmt, ...)                                      \
-        cp8_trace var_name((iu_parent_id),                                                                            \
-                           (uint32_t)__LINE__,                                                                        \
-                           __FILE__,                                                                                  \
-                           __FUNCTION__,                                                                              \
-                           (iz_attrs),                                                                                \
-                           (ip_attrs),                                                                                \
-                           (ip_fmt),                                                                                  \
-                           ##__VA_ARGS__)
-
-    /// @brief Declare a named cp8_trace_guard with structured attributes.
-    #define P8TRC(var_name, iu_parent_id, iz_attrs, ip_attrs)                                                         \
-        cp8_trace var_name((iu_parent_id), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs), )
+    /// @brief Declare a named cp8_trace for the current scope.
+    #define P8TRC_SCOPE(var_name, ip_name, iz_attrs, ip_attrs)                                                        \
+        cp8_trace var_name((ip_name), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs))
 
 /// @brief RAII guard that calls p8_trc_begin on construction and p8_trc_end on destruction.
-/// Stores the assigned trace ID so it can be forwarded to p8_log_sent for span correlation.
 /// Designed for zero overhead beyond the two underlying C calls — no virtual dispatch,
 /// no heap allocation, no exceptions.
 class cp8_trace final
 {
 public:
-    explicit cp8_trace(uint64_t                    iu_parent_trace_id,
+    explicit cp8_trace(const char                 *ip_name,
                        uint32_t                    iu_line,
                        const char                 *ip_file,
                        const char                 *ip_function,
-                       size_t                      iz_attrs         = 0,
-                       const struct s_p8_attr_val *ip_attrs         = nullptr,
-                       const char                 *ip_function_args = nullptr) noexcept
-        : mu_trace_id(
-              p8_trc_begin(iu_parent_trace_id, iu_line, ip_file, ip_function, iz_attrs, ip_attrs, ip_function_args))
+                       size_t                      iz_attrs = 0,
+                       const struct s_p8_attr_val *ip_attrs = nullptr) noexcept
+        : mu_span_id(p8_trc_begin(ip_name, iu_line, ip_file, ip_function, iz_attrs, ip_attrs))
     {
     }
 
     ~cp8_trace() noexcept
     {
-        p8_trc_end(mu_trace_id);
+        p8_trc_end(mu_span_id);
     }
 
-    /// Returns the trace ID assigned by p8_trc_begin; pass it to p8_log_sent / P8INF0 etc.
-    uint64_t get_trace_id() const noexcept
+    /// Returns the span ID: a parent for p8_trc_begin_async, the span for p8_log_sent
+    uint64_t get_span_id() const noexcept
     {
-        return mu_trace_id;
+        return mu_span_id;
     }
 
     cp8_trace(const cp8_trace &)            = delete;
@@ -428,7 +415,7 @@ public:
     cp8_trace &operator=(cp8_trace &&)      = delete;
 
 private:
-    uint64_t mu_trace_id;
+    uint64_t mu_span_id;
 };
 
 extern "C"
