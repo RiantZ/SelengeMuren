@@ -2287,3 +2287,35 @@ TEST_F(c_log_content_test, attribute_count_stops_at_255)
     EXPECT_EQ(lo_items[0].mo_hdr.mu_size,
               expected_item_size(sizeof(s_p8_log_item_dat) + 255 * (sizeof(p8_attr_id) + sizeof(uint64_t))));
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: one writer per thread for every log function
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static bool send_emb(const char *ip_format, ...)
+{
+    va_list lo_args;
+    va_start(lo_args, ip_format);
+    const bool lb_sent
+        = p8_log_sent_emb(e_p8_trace0, nullptr, 0, 500, __FILE__, __FUNCTION__, 0, nullptr, ip_format, &lo_args);
+    va_end(lo_args);
+    return lb_sent;
+}
+
+TEST_F(c_log_content_test, log_functions_share_one_writer_per_thread)
+{
+    size_t      lz_before = 0;
+    size_t      lz_after  = 0;
+    std::thread lo_thread(
+        [&]()
+        {
+            lz_before = p8_test_get_writer_count();
+            p8_log_sent(e_p8_trace0, nullptr, 0, 501, __FILE__, __FUNCTION__, 0, nullptr, "sent");
+            send_emb("emb");
+            lz_after = p8_test_get_writer_count();
+        });
+    lo_thread.join();
+
+    EXPECT_EQ(lz_after, lz_before + 1);
+}

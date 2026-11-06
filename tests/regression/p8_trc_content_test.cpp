@@ -447,11 +447,42 @@ TEST_F(c_trc_content_test, end_of_span_not_open_on_this_thread_keeps_stack)
             p8_trc_end(lu_b);
             p8_trc_end(lu_a);
         });
-    ASSERT_LT(lu_old, lu_a);
-    ASSERT_GT(lu_new, lu_a);
+    ASSERT_LT(lu_old & ~P8_ASYNC_SPAN_BIT, lu_a);
+    ASSERT_GT(lu_new & ~P8_ASYNC_SPAN_BIT, lu_a);
 
     auto lo_parsed = parse_captured_traces();
     EXPECT_EQ(parent_of(lo_parsed.mo_recs, lu_b), lu_a);
+    EXPECT_NE(find_end(lo_parsed.mo_recs, lu_old), nullptr);
+    EXPECT_NE(find_end(lo_parsed.mo_recs, lu_new), nullptr);
+}
+
+TEST_F(c_trc_content_test, end_of_sync_span_of_another_thread_keeps_stack)
+{
+    uint64_t lu_old = 0;
+    uint64_t lu_new = 0;
+    uint64_t lu_a   = 0;
+    uint64_t lu_b   = 0;
+    uint64_t lu_c   = 0;
+    // spans left open on other threads, one with an ID block taken before this thread's, one after
+    run_in_thread([&]() { lu_old = begin_at("old", 9); });
+    run_in_thread(
+        [&]()
+        {
+            lu_a = begin_at("a", 10);
+            lu_b = begin_at("b", 11);
+            run_in_thread([&]() { lu_new = begin_at("new", 9); });
+            p8_trc_end(lu_old);
+            p8_trc_end(lu_new);
+            lu_c = begin_at("c", 12);
+            p8_trc_end(lu_c);
+            p8_trc_end(lu_b);
+            p8_trc_end(lu_a);
+        });
+    ASSERT_LT(lu_old, lu_a);
+    ASSERT_GT(lu_new, lu_b);
+
+    auto lo_parsed = parse_captured_traces();
+    EXPECT_EQ(parent_of(lo_parsed.mo_recs, lu_c), lu_b);
     EXPECT_NE(find_end(lo_parsed.mo_recs, lu_old), nullptr);
     EXPECT_NE(find_end(lo_parsed.mo_recs, lu_new), nullptr);
 }
@@ -507,6 +538,27 @@ TEST_F(c_trc_content_test, async_span_ends_on_another_thread)
     ASSERT_NE(lp_begin, nullptr);
     ASSERT_NE(lp_end, nullptr);
     EXPECT_NE(lp_begin->mu_writer_id, lp_end->mu_writer_id);
+}
+
+TEST_F(c_trc_content_test, async_span_id_carries_the_async_bit)
+{
+    uint64_t lu_a = 0;
+    uint64_t lu_x = 0;
+    run_in_thread(
+        [&]()
+        {
+            lu_a = begin_at("a", 10);
+            lu_x = begin_async_at(lu_a, "x", 11);
+            p8_trc_end(lu_x);
+            p8_trc_end(lu_a);
+        });
+    EXPECT_FALSE(P8_IS_ASYNC_SPAN(lu_a));
+    EXPECT_TRUE(P8_IS_ASYNC_SPAN(lu_x));
+
+    // begin and end records carry the same ID, bit included
+    auto lo_parsed = parse_captured_traces();
+    EXPECT_NE(find_begin(lo_parsed.mo_recs, lu_x), nullptr);
+    EXPECT_NE(find_end(lo_parsed.mo_recs, lu_x), nullptr);
 }
 
 TEST_F(c_trc_content_test, end_of_zero_span_writes_nothing)

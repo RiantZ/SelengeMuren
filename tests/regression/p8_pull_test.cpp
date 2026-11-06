@@ -7,7 +7,6 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <cstdarg>
 #include <cstdint>
 #include <latch>
 #include <string>
@@ -24,25 +23,6 @@ std::string make_mem_config(size_t iz_buffers)
     const std::string ls       = std::to_string(lz_bytes);
     return std::string("{\"") + P8_CFG_KEY_MAX_MEMORY_SIZE + "\": \"" + ls + "\",\"" + P8_CFG_KEY_INITIAL_MEMORY_SIZE
            + "\": \"" + ls + "\"}";
-}
-
-// Log through the embedded API, the second writer of the calling thread.
-bool log_emb(const char *ip_format, ...)
-{
-    va_list lo_args;
-    va_start(lo_args, ip_format);
-    const bool lb_sent = p8_log_sent_emb(e_p8_trace0,
-                                         nullptr,
-                                         0,
-                                         static_cast<uint32_t>(__LINE__),
-                                         __FILE__,
-                                         __FUNCTION__,
-                                         0,
-                                         nullptr,
-                                         ip_format,
-                                         &lo_args);
-    va_end(lo_args);
-    return lb_sent;
 }
 } // namespace
 
@@ -503,23 +483,24 @@ TEST_F(c_pull_test, writers_have_their_own_ids)
                         nullptr,
                         "%s",
                         ls_long.c_str());
-            log_emb("embedded");
+            // the trace writer is the second writer of this thread
+            p8_trc_end(p8_trc_begin("second", static_cast<uint32_t>(__LINE__), __FILE__, __FUNCTION__, 0, nullptr));
             p8_test_drain_writers();
         });
     lo_thread.join();
 
-    // the drain takes the newest writer first: the embedded one, then the long record and its continuation
+    // the drain takes the newest writer first: the trace writer, then the long record and its continuation
     const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
     ASSERT_EQ(lr_bufs.size(), 3u);
-    const s_p8_data_buf_hdr *lp_emb  = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
+    const s_p8_data_buf_hdr *lp_trc  = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
     const s_p8_data_buf_hdr *lp_head = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[1].data());
     const s_p8_data_buf_hdr *lp_tail = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[2].data());
     ASSERT_NE(lp_head->mu_flags & P8_DATA_FLAG_FRAGMENT, 0);
     EXPECT_EQ(lp_tail->mu_writer_id, lp_head->mu_writer_id);
-    EXPECT_NE(lp_emb->mu_writer_id, lp_head->mu_writer_id);
+    EXPECT_NE(lp_trc->mu_writer_id, lp_head->mu_writer_id);
     // one thread for both writers, and each writer numbers its own buffers from 0
-    EXPECT_EQ(lp_emb->mu_thread_id, lp_head->mu_thread_id);
-    EXPECT_EQ(lp_emb->mu_buf_seq, 0u);
+    EXPECT_EQ(lp_trc->mu_thread_id, lp_head->mu_thread_id);
+    EXPECT_EQ(lp_trc->mu_buf_seq, 0u);
     EXPECT_EQ(lp_head->mu_buf_seq, 0u);
     EXPECT_EQ(lp_tail->mu_buf_seq, 1u);
 }

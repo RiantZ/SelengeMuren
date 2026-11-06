@@ -59,7 +59,11 @@ void cp8_trc::end(uint64_t iu_span_id)
         return;
     }
 
-    pop_span(iu_span_id);
+    // an async span is never on the stack
+    if(!P8_IS_ASYNC_SPAN(iu_span_id))
+    {
+        pop_span(iu_span_id);
+    }
     write_end(iu_span_id);
 }
 
@@ -69,9 +73,7 @@ void cp8_trc::pop_span(uint64_t iu_span_id)
     size_t lz_depth = 1;
     auto   lo_it    = mo_open_spans.end();
 
-    // IDs of one writer only grow, so they rise from the bottom of the stack to its top, and an ID above the
-    // top one (an async span) is not on the stack
-    if(0 == mo_open_spans.size() || iu_span_id > mo_open_spans.back())
+    if(0 == mo_open_spans.size())
     {
         return;
     }
@@ -82,8 +84,8 @@ void cp8_trc::pop_span(uint64_t iu_span_id)
         return;
     }
 
-    // spans opened inside this one missed their end and close with it; the scan stops at the first older span,
-    // so a span of another thread leaves the stack as it is
+    // spans opened inside this one missed their end and close with it; a span of another thread is not found
+    // and leaves the stack as it is
     --lo_it;
     while(lz_depth < mo_open_spans.size())
     {
@@ -95,10 +97,6 @@ void cp8_trc::pop_span(uint64_t iu_span_id)
             {
                 mo_open_spans.pull_last();
             }
-            return;
-        }
-        if(*lo_it < iu_span_id)
-        {
             return;
         }
     }
@@ -186,6 +184,10 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
         mu_end_span_id  = mu_next_span_id + P8_CORE_SPAN_ID_BLOCK;
     }
     lu_span_id = mu_next_span_id++;
+    if(P8_TRC_ITEM_BEGIN_ASYNC == iu_type)
+    {
+        lu_span_id |= P8_ASYNC_SPAN_BIT;
+    }
 
     std::unique_lock<kit::c_spin_lock> lo_guard(mo_lock);
 
