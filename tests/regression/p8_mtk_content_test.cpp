@@ -259,3 +259,28 @@ TEST_F(c_mtk_content_test, samples_span_multiple_buffers)
         EXPECT_DOUBLE_EQ(lo_parsed.mo_items[lz_i].md_value, static_cast<double>(lz_i));
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// one writer per thread for every metric function
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_mtk_content_test, metric_functions_share_one_writer_per_thread)
+{
+    s_p8_mtk_base lo_base = {};
+    lo_base.mp_name       = "shared";
+
+    size_t      lz_before = 0;
+    size_t      lz_after  = 0;
+    std::thread lo_thread(
+        [&]()
+        {
+            lz_before         = p8_test_get_writer_count();
+            h_p8_mtk_id li_id = p8_mtk_create(&lo_base);
+            EXPECT_TRUE(P8_IS_METRIC_VALID(li_id));
+            EXPECT_TRUE(p8_mtk_emit(li_id, 1.0));
+            lz_after = p8_test_get_writer_count();
+        });
+    lo_thread.join();
+
+    EXPECT_EQ(lz_after, lz_before + 1);
+}

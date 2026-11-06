@@ -159,20 +159,26 @@ bool cp8_mtk::end_group_emit(h_p8_mtk_group_id ih_group_id)
     return false;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// one writer per thread serves every metric function
+static cp8_mtk &get_tls_mtk()
+{
+    thread_local cp8_mtk lo_tls_mtk;
+    return lo_tls_mtk;
+}
+
 extern "C"
 {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     h_p8_mtk_id p8_mtk_create(const struct s_p8_mtk_base *ip_base)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.create(ip_base);
+        return get_tls_mtk().create(ip_base);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_mtk_emit(h_p8_mtk_id ih_id, double id_value)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.emit(ih_id, id_value);
+        return get_tls_mtk().emit(ih_id, id_value);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -181,15 +187,13 @@ extern "C"
                                     l_p8_mtk_query_cb           il_query,
                                     void                       *ip_user_context)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.create_query(ip_base, iu_query_interval_ms, il_query, ip_user_context);
+        return get_tls_mtk().create_query(ip_base, iu_query_interval_ms, il_query, ip_user_context);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     h_p8_mtk_group_id p8_mtk_create_group(const struct s_p8_mtk_base *ip_base, bool ib_multi_thread)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.create_group(ip_base, ib_multi_thread);
+        return get_tls_mtk().create_group(ip_base, ib_multi_thread);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -198,29 +202,25 @@ extern "C"
                                                 l_p8_mtk_group_query_cb     il_query,
                                                 void                       *ip_user_context)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.create_group_query(ip_base, iu_query_interval_ms, il_query, ip_user_context);
+        return get_tls_mtk().create_group_query(ip_base, iu_query_interval_ms, il_query, ip_user_context);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_mtk_group_emit_begin(h_p8_mtk_group_id ih_group_id)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.begin_group_emit(ih_group_id);
+        return get_tls_mtk().begin_group_emit(ih_group_id);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_mtk_group_emit(const char *ip_name, double id_value)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.emit_group(ip_name, id_value);
+        return get_tls_mtk().emit_group(ip_name, id_value);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     bool p8_mtk_group_emit_end(h_p8_mtk_group_id ih_group_id)
     {
-        thread_local cp8_mtk lo_tls_mtk;
-        return lo_tls_mtk.end_group_emit(ih_group_id);
+        return get_tls_mtk().end_group_emit(ih_group_id);
     }
 
 } // extern "C"

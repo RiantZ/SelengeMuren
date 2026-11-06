@@ -652,6 +652,14 @@ lbl_discard:
     return false;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// one writer per thread serves every log function
+static cp8_log &get_tls_log()
+{
+    thread_local cp8_log lo_tls_log;
+    return lo_tls_log;
+}
+
 extern "C"
 {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -713,19 +721,18 @@ extern "C"
                      const char                 *ip_format,
                      ...)
     {
-        thread_local cp8_log lo_tls_log;
-        va_list              lo_args;
+        va_list lo_args;
         va_start(lo_args, ip_format);
-        bool lb_result = lo_tls_log.send(ie_level,
-                                         ip_module,
-                                         iu_trace_id,
-                                         iu_line,
-                                         ip_file,
-                                         ip_function,
-                                         iz_attrs,
-                                         ip_attrs,
-                                         ip_format,
-                                         lo_args);
+        bool lb_result = get_tls_log().send(ie_level,
+                                            ip_module,
+                                            iu_trace_id,
+                                            iu_line,
+                                            ip_file,
+                                            ip_function,
+                                            iz_attrs,
+                                            ip_attrs,
+                                            ip_format,
+                                            lo_args);
         va_end(lo_args);
         return lb_result;
     }
@@ -742,17 +749,16 @@ extern "C"
                          const char                 *ip_format,
                          va_list                    *ip_va_list)
     {
-        thread_local cp8_log lo_tls_log;
-        return lo_tls_log.send(ie_level,
-                               ip_module,
-                               iu_trace_id,
-                               iu_line,
-                               ip_file,
-                               ip_function,
-                               iz_attrs,
-                               ip_attrs,
-                               ip_format,
-                               *ip_va_list);
+        return get_tls_log().send(ie_level,
+                                  ip_module,
+                                  iu_trace_id,
+                                  iu_line,
+                                  ip_file,
+                                  ip_function,
+                                  iz_attrs,
+                                  ip_attrs,
+                                  ip_format,
+                                  *ip_va_list);
     }
 
 } // extern "C"
