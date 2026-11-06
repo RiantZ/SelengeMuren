@@ -779,47 +779,12 @@ TEST_F(c_trc_content_test, number_split_across_buffers_keeps_next_record_aligned
     EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr) + 8u);
 }
 
-TEST_F(c_trc_content_test, record_that_fits_a_buffer_moves_whole_to_the_next_one)
-{
-    const p8_attr_id li_fill = p8_attr_register("trc_fill", e_p8_attr_str);
-    const p8_attr_id li_num  = p8_attr_register("trc_num", e_p8_attr_u64);
-    ASSERT_TRUE(P8_IS_ATTR_VALID(li_fill));
-    ASSERT_TRUE(P8_IS_ATTR_VALID(li_num));
-
-    // the first record leaves 48 bytes, the second one needs 56
-    const size_t      lz_payload = p8_test_get_buffer_size() - sizeof(s_p8_data_buf_hdr);
-    const size_t      lz_fill = lz_payload - 48 - sizeof(s_p8_trc_begin_dat) - sizeof(p8_attr_id) - sizeof(uint16_t);
-    const std::string ls_fill(lz_fill, 'f');
-    run_in_thread(
-        [&]()
-        {
-            s_p8_attr_val lo_fill = {};
-            lo_fill.m_id          = li_fill;
-            lo_fill.mp_str        = ls_fill.c_str();
-            s_p8_attr_val lo_num  = {};
-            lo_num.m_id           = li_num;
-            lo_num.mu_u64         = 42;
-            p8_trc_begin_async(0, "fill", 10, gp_file, gp_func, 1, &lo_fill);
-            p8_trc_begin_async(0, "num", 11, gp_file, gp_func, 1, &lo_num);
-            p8_trc_begin_async(0, "after", 12, gp_file, gp_func, 0, nullptr);
-        });
-
-    auto lo_parsed = parse_captured_traces();
-    ASSERT_EQ(lo_parsed.mo_recs.size(), 3u);
-    EXPECT_EQ(lo_parsed.mz_fragmented_bufs, 0u);
-    EXPECT_EQ(lo_parsed.mo_recs[0].mu_size, lz_payload - 48);
-    EXPECT_EQ(lo_parsed.mo_recs[1].mu_size, 56u);
-    EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr));
-    EXPECT_EQ(lo_parsed.mo_recs[2].mz_buf_off, sizeof(s_p8_data_buf_hdr) + 56u);
-    EXPECT_EQ(lo_parsed.mo_buf_seqs, (std::vector<uint32_t> { 0, 1 }));
-}
-
 TEST_F(c_trc_content_test, record_dropped_mid_write_leaves_no_trace)
 {
     const p8_attr_id li_blob = p8_attr_register("trc_blob", e_p8_attr_str);
     ASSERT_TRUE(P8_IS_ATTR_VALID(li_blob));
 
-    // the big record needs two buffers after the one it starts in; the next one fits a buffer but not the rest
+    // the big record needs two buffers after the one it starts in; the next one does not fit the rest of the first
     const std::string ls_big(2 * p8_test_get_buffer_size(), 'b');
     const std::string ls_next(p8_test_get_buffer_size() - 100, 'n');
     uint64_t          lu_big    = 1;
@@ -848,6 +813,9 @@ TEST_F(c_trc_content_test, record_dropped_mid_write_leaves_no_trace)
             lu_big = p8_trc_begin_async(0, "big", 10, gp_file, gp_func, 1, &lo_big);
             p8_test_release_buffers(lo_held.data(), lo_held.size());
 
+            // the failed begin gave 0, so its end is dropped too
+            p8_trc_end(lu_big);
+
             lu_ids[1] = p8_trc_begin_async(0, "small", 10, gp_file, gp_func, 0, nullptr);
             lu_ids[2] = p8_trc_begin_async(0, "next", 10, gp_file, gp_func, 1, &lo_next);
         });
@@ -855,9 +823,10 @@ TEST_F(c_trc_content_test, record_dropped_mid_write_leaves_no_trace)
     EXPECT_EQ(lu_big, 0u);
     EXPECT_EQ(p8_test_get_dropped_stats().mu_traces, 1u);
 
+    // no record of the big span, not even its end; the next record continues in the second buffer
     auto lo_parsed = parse_captured_traces();
     ASSERT_EQ(lo_parsed.mo_recs.size(), 3u);
-    EXPECT_EQ(lo_parsed.mz_fragmented_bufs, 0u);
+    EXPECT_EQ(lo_parsed.mz_fragmented_bufs, 1u);
     for(size_t lz_i = 0; lz_i < 3; ++lz_i)
     {
         EXPECT_EQ(lo_parsed.mo_recs[lz_i].mu_span_id, lu_ids[lz_i]);

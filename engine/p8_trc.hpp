@@ -8,9 +8,6 @@
 #include <mutex>
 #include <unordered_set>
 
-// the largest record whose size padded to 8 still fits the 16-bit mu_size
-#define P8_TRC_MAX_RECORD_SIZE (UINT16_MAX & ~7u)
-
 class cp8_trc : public cp8_tls_writer
 {
 public:
@@ -47,10 +44,6 @@ private:
 
     // a buffer with iz_needed free bytes; may unlock io_guard while it waits for one
     bool ensure_buffer(std::unique_lock<kit::c_spin_lock> &io_guard, size_t iz_needed);
-
-    // bytes one attribute takes after iz_record bytes of its record, 0 when it is skipped; ou_len is the string
-    // length to send, cut so the record stays within P8_TRC_MAX_RECORD_SIZE
-    size_t get_attr_size(const struct s_p8_attr_val &ir_attr, size_t iz_record, bool &ob_str, uint16_t &ou_len);
 
     void pop_span(uint64_t iu_span_id);
 
