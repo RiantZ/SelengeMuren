@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -306,4 +308,72 @@ TEST_F(c_log_fragment_test, very_large_string_spans_many_buffers)
 
     EXPECT_TRUE(lb_huge_sent);
     EXPECT_TRUE(lb_after_sent);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a new descriptor waits for a service buffer instead of being dropped
+// Capture stays off: with it a waiting acquire returns at once.
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_log_fragment_test, descriptor_waits_for_a_buffer)
+{
+    p8_release();
+
+    const std::string  ls_config = make_mem_config(/*buffers*/ 4);
+    struct s_p8_config lo_config = {};
+    lo_config.mp_json_config     = ls_config.c_str();
+    ASSERT_TRUE(p8_initialize(&lo_config));
+
+    std::vector<uint8_t *> lo_held;
+    for(uint8_t *lp_buf = p8_test_acquire_buffer(); lp_buf; lp_buf = p8_test_acquire_buffer())
+    {
+        lo_held.push_back(lp_buf);
+    }
+    ASSERT_EQ(p8_test_get_free_buffers_count(), 0u);
+
+    std::atomic<bool> lb_done { false };
+    bool              lb_sent = false;
+    std::thread       lo_thread(
+        [&lb_done, &lb_sent]()
+        {
+            lb_sent = p8_log_sent(e_p8_trace0,
+                                  nullptr,
+                                  0,
+                                  static_cast<uint32_t>(__LINE__),
+                                  __FILE__,
+                                  __FUNCTION__,
+                                  0,
+                                  nullptr,
+                                  "%d",
+                                  1);
+            lb_done = true;
+        });
+
+    // one buffer per wait: the descriptor's, then the record's
+    const auto lo_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while(!lb_done.load() && std::chrono::steady_clock::now() < lo_deadline)
+    {
+        if(p8_test_get_waiter_count() > 0 && !lo_held.empty())
+        {
+            p8_test_release_buffer(lo_held.back());
+            lo_held.pop_back();
+        }
+        std::this_thread::yield();
+    }
+    const bool lb_in_time = lb_done.load();
+
+    // the rest goes back first, so a hung producer cannot wedge the join
+    for(uint8_t *lp_buf : lo_held)
+    {
+        p8_test_release_buffer(lp_buf);
+    }
+    lo_thread.join();
+
+    EXPECT_TRUE(lb_in_time);
+    EXPECT_TRUE(lb_sent);
+    EXPECT_GE(p8_test_get_wait_arrivals(), 1u);
+
+    const s_p8_drop_stats lo_drops = p8_test_get_dropped_stats();
+    EXPECT_EQ(lo_drops.mu_svc, 0u) << "the descriptor was dropped, its records cannot be decoded";
+    EXPECT_EQ(lo_drops.mu_logs, 0u);
 }

@@ -1319,11 +1319,36 @@ size_t cp8_core::get_buffer_size()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-s_p8_svc_buf *cp8_core::svc_acquire_new()
+// length of a service string, cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
+static size_t get_svc_str_len(const char *ip_str)
 {
-    // Non-blocking: the caller holds mo_svc_mutex, which the worker needs before it
-    // recycles any buffer, so waiting here would deadlock. On exhaustion we skip.
-    uint8_t *lp_buf = acquire_buffer(false);
+    size_t lz_len = ip_str ? strlen(ip_str) : 0;
+    if(lz_len > P8_SVC_STR_MAX_LEN)
+    {
+        lz_len = p8_cut_utf8(ip_str, P8_SVC_STR_MAX_LEN);
+    }
+    return lz_len;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+s_p8_svc_buf *cp8_core::svc_acquire_new(std::unique_lock<std::mutex> *iop_lock)
+{
+    uint8_t *lp_buf = nullptr;
+
+    if(iop_lock)
+    {
+        // wait with mo_svc_mutex unlocked: the worker takes it before it recycles any buffer
+        iop_lock->unlock();
+        lp_buf = acquire_buffer(true);
+        iop_lock->lock();
+    }
+    else
+    {
+        // Non-blocking: the caller holds mo_svc_mutex, which the worker needs before it
+        // recycles any buffer, so waiting here would deadlock. On exhaustion we skip.
+        lp_buf = acquire_buffer(false);
+    }
+
     if(!lp_buf)
     {
         if(mu_dropped_svc.fetch_add(1, std::memory_order_relaxed) == 0)
@@ -1343,8 +1368,9 @@ s_p8_svc_buf *cp8_core::svc_acquire_new()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// TODO: (Lau) Function might return nullptr (svc_acquire_new), need to be handled here or in callers
-uint8_t *cp8_core::svc_reserve(size_t iz_padded)
+// TODO: (Lau) attr, module and metric entries still drop on exhaustion; an attr cannot wait under mo_attr_mutex
+// (writers take it under their spin lock), modules and metrics could
+uint8_t *cp8_core::svc_reserve(size_t iz_padded, std::unique_lock<std::mutex> *iop_lock)
 {
     const size_t lz_capacity = get_buffer_size();
 
@@ -1355,23 +1381,17 @@ uint8_t *cp8_core::svc_reserve(size_t iz_padded)
         return nullptr;
     }
 
-    s_p8_svc_buf *lp_cur = (mo_svc_buffers.size() == 0) ? svc_acquire_new() : &mo_svc_buffers.back();
-    if(!lp_cur)
+    // the last buffer is the current one; a missing or full one is followed by a fresh buffer
+    while(0 == mo_svc_buffers.size() || mo_svc_buffers.back().mz_used + iz_padded > lz_capacity)
     {
-        return nullptr;
-    }
-
-    if(lp_cur->mz_used + iz_padded > lz_capacity)
-    {
-        // current buffer is full — leave it in the list and start a fresh one
-        lp_cur = svc_acquire_new();
-        if(!lp_cur)
+        if(!svc_acquire_new(iop_lock))
         {
             return nullptr;
         }
     }
 
-    uint8_t *lp_dst = lp_cur->mp_buf + lp_cur->mz_used;
+    s_p8_svc_buf *lp_cur = &mo_svc_buffers.back();
+    uint8_t      *lp_dst = lp_cur->mp_buf + lp_cur->mz_used;
     memset(lp_dst, 0, iz_padded);
     lp_cur->mz_used += iz_padded;
 
@@ -1386,8 +1406,8 @@ void cp8_core::serialize_attr_desc(const s_p8_attr_desc *ip_desc)
         return;
     }
 
-    // truncate over-long names to the service-string boundary (length modulo)
-    size_t lz_name   = ip_desc->mp_name ? strlen(ip_desc->mp_name) % P8_SVC_STR_MAX_LEN : 0;
+    // over-long names are cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
+    size_t lz_name   = get_svc_str_len(ip_desc->mp_name);
 
     // fixed header + NUL-terminated name, padded so the whole entry is 8-aligned
     size_t lz_padded = P8_ALIGN_UP_8(sizeof(s_p8_attr_svc) + lz_name + 1);
@@ -1415,17 +1435,17 @@ void cp8_core::serialize_attr_desc(const s_p8_attr_desc *ip_desc)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
+bool cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc, std::unique_lock<std::mutex> &io_lock)
 {
     if(!ip_desc)
     {
-        return;
+        return false;
     }
 
-    // truncate over-long strings to the service-string boundary (length modulo)
-    size_t lz_file = ip_desc->mp_file ? strlen(ip_desc->mp_file) % P8_SVC_STR_MAX_LEN : 0;
-    size_t lz_func = ip_desc->mp_function ? strlen(ip_desc->mp_function) % P8_SVC_STR_MAX_LEN : 0;
-    size_t lz_fmt  = ip_desc->mp_format ? strlen(ip_desc->mp_format) % P8_SVC_STR_MAX_LEN : 0;
+    // over-long strings are cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
+    size_t lz_file = get_svc_str_len(ip_desc->mp_file);
+    size_t lz_func = get_svc_str_len(ip_desc->mp_function);
+    size_t lz_fmt  = get_svc_str_len(ip_desc->mp_format);
 
     size_t lz_args = ip_desc->mz_args_count;
     if(lz_args > P8_LOG_MAX_ARGS)
@@ -1438,10 +1458,10 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
     size_t lz_padded
         = P8_ALIGN_UP_8(sizeof(s_p8_log_item_svc) + lz_file + lz_func + lz_fmt + lz_args * sizeof(s_p8_log_varg));
 
-    uint8_t *lp_dst = svc_reserve(lz_padded);
+    uint8_t *lp_dst = svc_reserve(lz_padded, &io_lock);
     if(!lp_dst)
     {
-        return;
+        return false;
     }
 
     s_p8_log_item_svc *lp_entry     = reinterpret_cast<s_p8_log_item_svc *>(lp_dst);
@@ -1476,6 +1496,7 @@ void cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc)
         memcpy(lp_var, ip_desc->ma_args, lz_args * sizeof(s_p8_log_varg));
     }
     // trailing padding is already zeroed by svc_reserve
+    return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1486,8 +1507,8 @@ void cp8_core::serialize_log_mod(const s_p8_log_mod *ip_mod)
         return;
     }
 
-    // truncate over-long names to the service-string boundary (length modulo)
-    size_t lz_name   = ip_mod->mp_name ? strlen(ip_mod->mp_name) % P8_SVC_STR_MAX_LEN : 0;
+    // over-long names are cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
+    size_t lz_name   = get_svc_str_len(ip_mod->mp_name);
 
     // fixed header + NUL-terminated name, padded so the whole entry is 8-aligned
     size_t lz_padded = P8_ALIGN_UP_8(sizeof(s_p8_log_mod_svc) + lz_name + 1);
@@ -1525,10 +1546,10 @@ void cp8_core::serialize_mtk_desc(const struct s_p8_mtk_desc *ip_desc,
         return;
     }
 
-    // truncate over-long strings to the service-string boundary (length modulo)
-    size_t lz_name   = ip_desc->mp_name ? strlen(ip_desc->mp_name) % P8_SVC_STR_MAX_LEN : 0;
-    size_t lz_desc   = ip_desc->mp_description ? strlen(ip_desc->mp_description) % P8_SVC_STR_MAX_LEN : 0;
-    size_t lz_unit   = ip_desc->mp_unit ? strlen(ip_desc->mp_unit) % P8_SVC_STR_MAX_LEN : 0;
+    // over-long strings are cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
+    size_t lz_name   = get_svc_str_len(ip_desc->mp_name);
+    size_t lz_desc   = get_svc_str_len(ip_desc->mp_description);
+    size_t lz_unit   = get_svc_str_len(ip_desc->mp_unit);
 
     // fixed header + [name][description][unit] (byte counts, no NUL) + attribute
     // id+value pairs, padded so the whole entry is 8-aligned
@@ -1583,18 +1604,23 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
                                                  const char *ip_function,
                                                  const char *ip_format)
 {
+    s_p8_log_desc *lp_desc   = nullptr;
+    s_p8_log_desc *lp_result = nullptr;
+
+    // held while the entry waits for a service buffer, so no thread finds the descriptor before it is written
     std::lock_guard<std::mutex> lo_lock(mo_log_desc_mutex);
 
-    auto lo_it = mo_log_descs.find(iu_hash);
-    if(lo_it != mo_log_descs.end())
+    if(auto lo_it = mo_log_descs.find(iu_hash); lo_it != mo_log_descs.end())
     {
-        return lo_it->second;
+        lp_result = lo_it->second;
+        goto lbl_exit;
     }
 
-    s_p8_log_desc *lp_desc = new(std::nothrow) s_p8_log_desc;
+    lp_desc = new(std::nothrow) s_p8_log_desc;
     if(!lp_desc)
     {
-        return nullptr;
+        std::fprintf(stderr, "cp8_core::resolve_log_desc: descriptor allocation failed\n");
+        goto lbl_exit;
     }
 
     lp_desc->mu_hash            = iu_hash;
@@ -1615,14 +1641,30 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
         }
     }
 
-    mo_log_descs[iu_hash] = lp_desc;
-
     {
-        std::lock_guard<std::mutex> lo_svc_lock(mo_svc_mutex);
-        serialize_log_desc(lp_desc);
+        // waits for a buffer when the service buffer is full, instead of dropping the entry
+        std::unique_lock<std::mutex> lo_svc_lock(mo_svc_mutex);
+        if(!serialize_log_desc(lp_desc, lo_svc_lock))
+        {
+            std::fprintf(stderr,
+                         "cp8_core::resolve_log_desc: no service buffer for descriptor %llx\n",
+                         static_cast<unsigned long long>(iu_hash));
+            goto lbl_exit;
+        }
     }
 
-    return lp_desc;
+    // known only once its entry is written, so no record goes out before its descriptor
+    mo_log_descs[iu_hash] = lp_desc;
+    lp_result             = lp_desc;
+    lp_desc               = nullptr;
+
+lbl_exit:
+    if(lp_desc)
+    {
+        delete lp_desc;
+        lp_desc = nullptr;
+    }
+    return lp_result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

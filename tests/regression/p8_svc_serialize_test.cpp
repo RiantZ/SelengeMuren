@@ -359,3 +359,51 @@ TEST_F(c_p8_svc_serialize_test, register_duplicate_module_serializes_once)
 
     EXPECT_EQ(li_count, 1);
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// names longer than P8_SVC_STR_MAX_LEN are cut to it, back to the start of a split UTF-8 character
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_p8_svc_serialize_test, long_names_cut_at_max_len_on_utf8_boundary)
+{
+    const std::string lo_attr(P8_SVC_STR_MAX_LEN, 'a');
+    // a 2-byte character on bytes P8_SVC_STR_MAX_LEN - 1 and P8_SVC_STR_MAX_LEN
+    const std::string lo_mod = std::string(P8_SVC_STR_MAX_LEN - 1, 'm') + "\xC3\xA9" + "mm";
+
+    p8_attr_id li_attr       = p8_attr_register(lo_attr.c_str(), e_p8_attr_i64);
+    ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
+
+    p_p8_module lp_mod = P8_MODULE_INVALID_ID;
+    ASSERT_TRUE(p8_log_register_module(lo_mod.c_str(), e_p8_info0, &lp_mod));
+    const uint16_t lu_mod_id = reinterpret_cast<const s_p8_log_mod *>(lp_mod)->mu_id;
+
+    int li_attrs             = 0;
+    int li_mods              = 0;
+    for(const auto &lr_entry : collect_service_entries())
+    {
+        if(P8_SVC_TYPE_ATTR == lr_entry.mu_type)
+        {
+            s_p8_attr_svc lo_svc = {};
+            memcpy(&lo_svc, lr_entry.mo_bytes.data(), sizeof(lo_svc));
+            if(lo_svc.mi_id == li_attr)
+            {
+                ++li_attrs;
+                EXPECT_EQ(read_cstr(lr_entry.mo_bytes, sizeof(s_p8_attr_svc)), lo_attr);
+            }
+        }
+        else if(P8_SVC_TYPE_MODULE == lr_entry.mu_type)
+        {
+            s_p8_log_mod_svc lo_svc = {};
+            memcpy(&lo_svc, lr_entry.mo_bytes.data(), sizeof(lo_svc));
+            if(lo_svc.mu_id == lu_mod_id)
+            {
+                ++li_mods;
+                EXPECT_EQ(read_cstr(lr_entry.mo_bytes, sizeof(s_p8_log_mod_svc)),
+                          lo_mod.substr(0, P8_SVC_STR_MAX_LEN - 1));
+            }
+        }
+    }
+
+    EXPECT_EQ(li_attrs, 1);
+    EXPECT_EQ(li_mods, 1);
+}

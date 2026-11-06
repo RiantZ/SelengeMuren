@@ -89,18 +89,20 @@ protected:
 };
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
-#define P8_ENSURE_SPACE(dst, buf_end, needed)                                                                         \
+// Write a piece of the record; one that does not fit continues in the next buffer byte by byte, so no buffer ends
+// with a gap
+#define P8_WRITE_PIECE(dst, buf_end, src, len, written)                                                               \
     do                                                                                                                \
     {                                                                                                                 \
-        if((dst) + (needed) > (buf_end)) [[unlikely]]                                                                 \
+        if((dst) + (len) <= (buf_end)) [[likely]]                                                                     \
         {                                                                                                             \
-            mz_buf_used = static_cast<size_t>((dst) - mp_buffer);                                                     \
-            if(!rotate_fragment_buffer())                                                                             \
-            {                                                                                                         \
-                goto lbl_discard;                                                                                     \
-            }                                                                                                         \
-            (dst)     = mp_buffer + mz_buf_used;                                                                      \
-            (buf_end) = mp_buffer + mz_buf_max;                                                                       \
+            memcpy((dst), (src), (len));                                                                              \
+            (dst)     += (len);                                                                                       \
+            (written) += (len);                                                                                       \
+        }                                                                                                             \
+        else if(!copy_fragmented((dst), (buf_end), (src), (len), (written)))                                          \
+        {                                                                                                             \
+            goto lbl_discard;                                                                                         \
         }                                                                                                             \
     } while(0)
 // NOLINTEND(cppcoreguidelines-macro-usage)
