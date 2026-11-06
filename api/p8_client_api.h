@@ -317,6 +317,15 @@ extern "C"
 
 // TODO: add condition MACRO to switch off traces
 
+/// @brief Span ID of a failed begin
+#define P8_INVALID_SPAN      0ull
+
+/// @brief Parent span ID of a span that starts a new trace
+#define P8_NO_PARENT_SPAN    0ull
+
+/// @brief True when a span ID from p8_trc_begin / p8_trc_begin_async is valid
+#define P8_IS_SPAN_VALID(id) (P8_INVALID_SPAN != (uint64_t)(id))
+
 /// @brief Start a span that ends on the same thread
 #define P8TRC_BEGIN(ip_name, iz_attrs, ip_attrs)                                                                      \
     p8_trc_begin((ip_name), (uint32_t)__LINE__, __FILE__, __FUNCTION__, (iz_attrs), (ip_attrs))
@@ -336,7 +345,7 @@ extern "C"
     /// @param ip_function [in] source code function name
     /// @param iz_attrs    [in] number of elements in ip_attrs; pass 0 when no attributes
     /// @param ip_attrs    [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
-    /// @return span ID, unique in the process; 0 on failure
+    /// @return span ID, unique in the process; P8_INVALID_SPAN on failure, check it with P8_IS_SPAN_VALID
     uint64_t p8_trc_begin(const char                 *ip_name,
                           uint32_t                    iu_line,
                           const char                 *ip_file,
@@ -345,14 +354,14 @@ extern "C"
                           const struct s_p8_attr_val *ip_attrs);
 
     /// @brief Start a span that may end on any thread. For internal usage — prefer P8TRC_BEGIN_ASYNC macro.
-    /// @param iu_parent_id [in] parent span ID from any thread; pass 0 to start a new trace
+    /// @param iu_parent_id [in] parent span ID from any thread; pass P8_NO_PARENT_SPAN to start a new trace
     /// @param ip_name      [in] span name; the same at every call from one source line, the first one is sent
     /// @param iu_line      [in] source code line index
     /// @param ip_file      [in] source code file name
     /// @param ip_function  [in] source code function name
     /// @param iz_attrs     [in] number of elements in ip_attrs; pass 0 when no attributes
     /// @param ip_attrs     [in] array of s_p8_attr_val of length iz_attrs; may be nullptr when iz_attrs == 0
-    /// @return span ID, unique in the process; 0 on failure
+    /// @return span ID, unique in the process; P8_INVALID_SPAN on failure, check it with P8_IS_SPAN_VALID
     uint64_t p8_trc_begin_async(uint64_t                    iu_parent_id,
                                 const char                 *ip_name,
                                 uint32_t                    iu_line,
@@ -363,7 +372,7 @@ extern "C"
 
     /// @brief End a span. A span of p8_trc_begin ends on its own thread, otherwise it stays the parent of the
     /// next spans there; a span of p8_trc_begin_async may end on any thread.
-    /// @param iu_span_id [in] span ID returned by begin; passing 0 is a no-op
+    /// @param iu_span_id [in] span ID returned by begin; passing P8_INVALID_SPAN is a no-op
     void p8_trc_end(uint64_t iu_span_id);
 
 #ifdef __cplusplus
