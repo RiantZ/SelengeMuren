@@ -55,6 +55,12 @@ extern "C"
     /// automatically. Shared memory is cleaned up here so a subsequent
     /// p8_initialize() can start fresh.
     ///
+    /// Buffered data is drained to the sink and the sink is closed only when the
+    /// core is deleted. So the output is complete when this call returns only if
+    /// every thread that called a log, trace or metric function has exited and the
+    /// calling thread never called one; otherwise it is complete when the last
+    /// such thread exits (for the main thread, at process exit).
+    ///
     /// Safe to call when P8 is not initialized (no-op).
     /// After this call p8_get_initialized() returns false.
     void p8_release();
