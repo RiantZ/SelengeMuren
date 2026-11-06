@@ -330,7 +330,7 @@ extern "C"
 
     /// @brief Start a span that ends on the same thread; its parent is the innermost open span of this thread.
     /// For internal usage — prefer P8TRC_BEGIN / P8TRC_SCOPE macros.
-    /// @param ip_name     [in] span name
+    /// @param ip_name     [in] span name; the same at every call from one source line, the first one is sent
     /// @param iu_line     [in] source code line index
     /// @param ip_file     [in] source code file name
     /// @param ip_function [in] source code function name
@@ -346,7 +346,7 @@ extern "C"
 
     /// @brief Start a span that may end on any thread. For internal usage — prefer P8TRC_BEGIN_ASYNC macro.
     /// @param iu_parent_id [in] parent span ID from any thread; pass 0 to start a new trace
-    /// @param ip_name      [in] span name
+    /// @param ip_name      [in] span name; the same at every call from one source line, the first one is sent
     /// @param iu_line      [in] source code line index
     /// @param ip_file      [in] source code file name
     /// @param ip_function  [in] source code function name
@@ -361,7 +361,8 @@ extern "C"
                                 size_t                      iz_attrs,
                                 const struct s_p8_attr_val *ip_attrs);
 
-    /// @brief End a span started by p8_trc_begin or p8_trc_begin_async; may be called from any thread.
+    /// @brief End a span. A span of p8_trc_begin ends on its own thread, otherwise it stays the parent of the
+    /// next spans there; a span of p8_trc_begin_async may end on any thread.
     /// @param iu_span_id [in] span ID returned by begin; passing 0 is a no-op
     void p8_trc_end(uint64_t iu_span_id);
 

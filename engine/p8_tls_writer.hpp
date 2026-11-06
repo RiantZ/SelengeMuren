@@ -77,8 +77,7 @@ protected:
     // Per-thread dropped-element counters, incremented on the hot path at each
     // discard site (single relaxed atomic add). The core pulls-and-resets them
     // via pull_dropped() on its stats cadence and on destruction. Each subclass
-    // bumps the counter for its own kind; only cp8_log does so today, so metrics
-    // and traces stay 0 until those become writers.
+    // bumps the counter for its own kind.
     std::atomic<uint64_t> mu_dropped_logs { 0 };
     std::atomic<uint64_t> mu_dropped_metrics { 0 };
     std::atomic<uint64_t> mu_dropped_traces { 0 };
