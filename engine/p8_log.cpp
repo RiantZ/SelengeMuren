@@ -391,12 +391,32 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         return false;
     }
 
-    std::unique_lock<kit::c_spin_lock> lo_guard(mo_lock);
-
     if(!mp_core) [[unlikely]]
     {
         return false;
     }
+
+    // before the writer lock: the core may wait for a service buffer, and the worker takes this lock before it
+    // recycles one; mo_desc_map is touched by this thread only
+    lu_hash    = P8_GET_LOG_HASH(ip_file, iu_line);
+
+    auto lo_it = mo_desc_map.find(lu_hash);
+    if(lo_it != mo_desc_map.end())
+    {
+        lp_desc = lo_it->second;
+    }
+    else
+    {
+        lp_desc = mp_core->resolve_log_desc(lu_hash, ip_file, iu_line, ip_function, ip_format);
+        if(!lp_desc) [[unlikely]]
+        {
+            mu_dropped_logs.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        mo_desc_map[lu_hash] = lp_desc;
+    }
+
+    std::unique_lock<kit::c_spin_lock> lo_guard(mo_lock);
 
     // buffer availability check — reuse current buffer when possible. A full
     // buffer is parked in mo_fragments (not submitted); the worker drains it
@@ -434,24 +454,6 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
-    }
-
-    // compute hash from file + line
-    lu_hash    = P8_GET_LOG_HASH(ip_file, iu_line);
-
-    auto lo_it = mo_desc_map.find(lu_hash);
-    if(lo_it != mo_desc_map.end())
-    {
-        lp_desc = lo_it->second;
-    }
-    else
-    {
-        lp_desc = mp_core->resolve_log_desc(lu_hash, ip_file, iu_line, ip_function, ip_format);
-        if(!lp_desc)
-        {
-            return false;
-        }
-        mo_desc_map[lu_hash] = lp_desc;
     }
 
     // a rollback of this record (lbl_discard) restores this list length
@@ -529,10 +531,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     }
                 }
 
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
-                memcpy(lp_dst, &lu_len, sizeof(lu_len));
-                lp_dst          += sizeof(lu_len);
-                lz_args_written += sizeof(lu_len);
+                P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_len, sizeof(lu_len), lz_args_written);
 
                 if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_args_written))
                 {
@@ -542,13 +541,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             }
             default:
             {
-                P8_ENSURE_SPACE(lp_dst, lp_buf_end, lp_arg->mu_size);
-
 #if defined(GTX32)
                 if(4 == lp_arg->mu_size)
                 {
                     unsigned int lu_val = va_arg(io_args, unsigned int);
-                    memcpy(lp_dst, &lu_val, sizeof(lu_val));
+                    P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_val, sizeof(lu_val), lz_args_written);
                 }
                 else
 #endif
@@ -557,22 +554,19 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     if(P8_LOG_ARG_TYPE_DOUBLE != lp_arg->mu_type) [[likely]]
                     {
                         uint64_t lu_val = va_arg(io_args, uint64_t);
-                        memcpy(lp_dst, &lu_val, sizeof(lu_val));
+                        P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_val, sizeof(lu_val), lz_args_written);
                     }
                     else
                     {
                         double ld_val = va_arg(io_args, double);
-                        memcpy(lp_dst, &ld_val, sizeof(ld_val));
+                        P8_WRITE_PIECE(lp_dst, lp_buf_end, &ld_val, sizeof(ld_val), lz_args_written);
                     }
                 }
                 else if(P8_LOG_ARG_TYPE_LDOUBLE == lp_arg->mu_type)
                 {
                     long double ld_val = va_arg(io_args, long double);
-                    memcpy(lp_dst, &ld_val, sizeof(ld_val));
+                    P8_WRITE_PIECE(lp_dst, lp_buf_end, &ld_val, sizeof(ld_val), lz_args_written);
                 }
-
-                lp_dst          += lp_arg->mu_size;
-                lz_args_written += lp_arg->mu_size;
                 break;
             }
             } // switch
@@ -605,23 +599,17 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
         if(lp_attr_desc->me_type == e_p8_attr_type::e_p8_attr_str)
         {
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(p8_attr_id));
-            memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
-            lp_dst             += sizeof(p8_attr_id);
-            lz_attrs_written   += sizeof(p8_attr_id);
+            P8_WRITE_PIECE(lp_dst, lp_buf_end, &li_id, sizeof(p8_attr_id), lz_attrs_written);
 
-            const char *lp_str  = ip_attrs[lz_i].mp_str;
-            uint16_t    lu_len  = 0;
+            const char *lp_str = ip_attrs[lz_i].mp_str;
+            uint16_t    lu_len = 0;
             if(lp_str)
             {
                 size_t lz_slen = strlen(lp_str);
                 lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
             }
 
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, sizeof(lu_len));
-            memcpy(lp_dst, &lu_len, sizeof(lu_len));
-            lp_dst           += sizeof(lu_len);
-            lz_attrs_written += sizeof(lu_len);
+            P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_len, sizeof(lu_len), lz_attrs_written);
 
             if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_attrs_written))
             {
@@ -630,23 +618,15 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         }
         else
         {
-            size_t lz_needed = sizeof(p8_attr_id) + sizeof(uint64_t);
-            P8_ENSURE_SPACE(lp_dst, lp_buf_end, lz_needed);
-            memcpy(lp_dst, &li_id, sizeof(p8_attr_id));
-            lp_dst += sizeof(p8_attr_id);
-            memcpy(lp_dst, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t));
-            lp_dst           += sizeof(uint64_t);
-            lz_attrs_written += lz_needed;
+            P8_WRITE_PIECE(lp_dst, lp_buf_end, &li_id, sizeof(p8_attr_id), lz_attrs_written);
+            P8_WRITE_PIECE(lp_dst, lp_buf_end, &ip_attrs[lz_i].mu_u64, sizeof(uint64_t), lz_attrs_written);
         }
 
         lu_attrs_count++;
     }
 
-    // Align the next item header to 8 bytes for direct 64-bit field reads. Pad
-    // the buffer write offset, not the logical size; the buffer is a multiple of
-    // 8, so the pad always fits without crossing the buffer end. The pad bytes are
-    // left as-is (consumers skip them via mu_size) to avoid emitting a predictable
-    // run of zeros that would weaken downstream encryption.
+    // Pad the record to 8 bytes so the next one starts 8-aligned: with no gaps the write offset is congruent to the
+    // record size. Pad bytes stay as-is (consumers skip them via mu_size); a run of zeros would weaken encryption.
     {
         size_t lz_size          = sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written;
         size_t lz_pad           = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
@@ -674,10 +654,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     return true;
 
 lbl_discard:
-    // rotate_fragment_buffer failed: give back the buffers taken only for this record
+    // rotate_fragment_buffer failed: give back the buffers taken only for this record, with their numbers, as the
+    // worker never saw them (the writer lock is held for the whole record)
     while(mo_fragments.size() > lz_frag_commit + 1)
     {
         mp_core->release_buffer(mo_fragments.pull_last());
+        --mu_buf_seq;
     }
 
     // The record began in this buffer at lp_hdr. The buffer only waited in mo_fragments: it was not released
@@ -687,9 +669,11 @@ lbl_discard:
     mz_buf_used = static_cast<size_t>(reinterpret_cast<uint8_t *>(lp_hdr) - mp_buffer);
     if(sizeof(s_p8_data_buf_hdr) == mz_buf_used) [[unlikely]]
     {
+        // taken for this record alone
         mp_core->release_buffer(mp_buffer);
         mp_buffer   = nullptr;
         mz_buf_used = 0;
+        --mu_buf_seq;
     }
     else
     {
