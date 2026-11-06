@@ -201,7 +201,7 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
     lz_frag_commit         = mo_fragments.size();
 
     lp_hdr                 = reinterpret_cast<s_p8_trc_begin_dat *>(mp_buffer + mz_buf_used);
-    lp_hdr->mu_timestamp   = kit::get_hires_ticks();
+    lp_hdr->mu_timestamp   = get_ticks();
     lp_hdr->mu_span_id     = lu_span_id;
     lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_trc_begin_dat));
     lp_hdr->mu_type        = iu_type;
@@ -281,7 +281,7 @@ void cp8_trc::write_end(uint64_t iu_span_id)
     }
 
     s_p8_trc_end_dat *lp_rec  = reinterpret_cast<s_p8_trc_end_dat *>(mp_buffer + mz_buf_used);
-    lp_rec->mu_timestamp      = kit::get_hires_ticks();
+    lp_rec->mu_timestamp      = get_ticks();
     lp_rec->mu_span_id        = iu_span_id;
     lp_rec->mu_size           = static_cast<uint16_t>(sizeof(s_p8_trc_end_dat));
     lp_rec->mu_type           = P8_TRC_ITEM_END;

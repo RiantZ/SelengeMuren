@@ -168,6 +168,12 @@ public:
     // span IDs: the first of P8_CORE_SPAN_ID_BLOCK IDs that are unique in the process
     uint64_t reserve_span_ids();
 
+    // clock of every stamp in the stream: the user's when p8_initialize got its callback and ratio, the system one
+    // otherwise; a writer copies the callback once, so its stamps do not touch the core
+    uint64_t             get_ticks() const;
+    l_p8_get_timer_value get_timer_value() const;
+    void                *get_timer_ctx() const;
+
     // non-copyable, non-movable
     cp8_core(const cp8_core &)            = delete;
     cp8_core &operator=(const cp8_core &) = delete;
@@ -192,7 +198,8 @@ public:
 
 private:
     bool init_buffer_pool(const char *ip_max_memory_size, const char *ip_initial_memory_size);
-    bool init_header(const struct s_p8_config *ip_config);
+    void init_clock(const struct s_p8_config *ip_config);
+    bool init_header();
 
     // worker thread
     void start_worker();
@@ -353,6 +360,13 @@ private:
     // recycled by the worker thread. Protected by a mutex on the hot path.
     kit::c_lst<uint8_t *> mo_ready_queue { 4096 };
     std::mutex            mo_ready_lock;
+
+    // clock of every stamp in the stream, chosen once by init_clock: a null ml_timer_value is the system clock;
+    // nanoseconds = ticks * mu_clock_numer / mu_clock_denom
+    l_p8_get_timer_value ml_timer_value { nullptr };
+    void                *mp_timer_ctx { nullptr };
+    uint64_t             mu_clock_numer { 0 };
+    uint64_t             mu_clock_denom { 0 };
 
     // batch packets (s_p8_batch), used only by the thread that runs flush_ready
     uint64_t mu_batch_margin_ticks = 0;     // P8_CORE_BATCH_MARGIN_US (10usec) in clock ticks

@@ -12,11 +12,6 @@ extern "C"
 {
 #endif
 
-    /// @brief callback function type to get high-resolution system timer frequency
-    /// @param ip_ctx [in] calling software context
-    /// @return frequency in hertz
-    typedef uint64_t (*l_p8_get_timer_frequency)(void *ip_ctx);
-
     /// @brief callback function type to get high-resolution system timer value
     /// @param ip_ctx [in] calling software context
     /// @return timer value
@@ -31,10 +26,13 @@ extern "C"
         //! Fields provides the way to reimplement internal mechanism of timestamping, by default it is reccommended to
         //! provide nullptr as arguments. But if you want to syncronize different streams and clocks - it might be
         //! used.
-        void *mp_ctx_timer;                      //! Context for timer functions, nullptr accepted
-        l_p8_get_timer_frequency
-                             ml_timer_frequency; //! callback to get system high-resolution timer frequency, or nullptr
-        l_p8_get_timer_value ml_timer_value;     //! callback to get system high-resolution timer value or nullptr
+        //! When ml_timer_value is set and mu_timer_numer, mu_timer_denom are not 0, every timestamp of the stream
+        //! (header, records, batches) comes from it, otherwise from the system clock. ml_timer_value is called for
+        //! every record on every thread that writes and by the worker, so it must be thread-safe, monotonic and fast.
+        void                *mp_ctx_timer;   //! Context for timer functions, nullptr accepted
+        l_p8_get_timer_value ml_timer_value; //! callback to get system high-resolution timer value or nullptr
+        uint64_t             mu_timer_numer; //! nanoseconds = ticks * mu_timer_numer / mu_timer_denom
+        uint64_t             mu_timer_denom; //! see mu_timer_numer
     };
 
     /// @brief P8 initialization function, should be called once at CPU startup

@@ -387,6 +387,50 @@ TEST_F(c_trc_content_test, begin_and_end_write_two_records)
     EXPECT_GE(lr_end.mu_timestamp, lr_begin.mu_timestamp);
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a user clock that stands still, so every stamp it gives is known
+static uint64_t get_still_ticks(void *)
+{
+    return 0x0123456789ABCDEFull;
+}
+
+TEST_F(c_trc_content_test, records_and_batches_take_the_user_clock)
+{
+    // the fixture core has no user clock: start one that has
+    p8_release();
+    const std::string  ls_config = make_mem_config(/*buffers*/ 128);
+    struct s_p8_config lo_config = {};
+    lo_config.mp_json_config     = ls_config.c_str();
+    lo_config.ml_timer_value     = get_still_ticks;
+    lo_config.mu_timer_numer     = 1000; // a tick is 1 microsecond
+    lo_config.mu_timer_denom     = 1;
+    ASSERT_TRUE(p8_initialize(&lo_config));
+    p8_test_enable_buffer_capture();
+
+    uint64_t lu_id = 0;
+    run_in_thread(
+        [&]()
+        {
+            lu_id = begin_at("work", 10);
+            p8_trc_end(lu_id);
+        });
+
+    auto             lo_parsed = parse_captured_traces();
+    const s_trc_rec *lp_begin  = find_begin(lo_parsed.mo_recs, lu_id);
+    const s_trc_rec *lp_end    = find_end(lo_parsed.mo_recs, lu_id);
+    ASSERT_NE(lp_begin, nullptr);
+    ASSERT_NE(lp_end, nullptr);
+    EXPECT_EQ(lp_begin->mu_timestamp, get_still_ticks(nullptr));
+    EXPECT_EQ(lp_end->mu_timestamp, get_still_ticks(nullptr));
+
+    // a batch starts P8_CORE_BATCH_MARGIN_US before the clock, counted in ticks of the user clock
+    const std::vector<s_p8_batch> &lr_batches = p8_test_get_captured_batches();
+    ASSERT_FALSE(lr_batches.empty());
+    EXPECT_EQ(lr_batches.back().mu_timestamp,
+              get_still_ticks(nullptr)
+                  - P8_CORE_BATCH_MARGIN_US * 1000 * lo_config.mu_timer_denom / lo_config.mu_timer_numer);
+}
+
 TEST_F(c_trc_content_test, nested_span_takes_innermost_open_span_as_parent)
 {
     uint64_t lu_a = 0;

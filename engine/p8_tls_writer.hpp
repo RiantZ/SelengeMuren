@@ -5,6 +5,7 @@
 #include <atomic>
 #include <vector>
 #include "kit/spin_lock.hpp"
+#include "kit/time.hpp"
 
 // the largest record whose size padded to 8 still fits the 16-bit mu_size of a record
 #define P8_MAX_RECORD_SIZE (UINT16_MAX & ~7u)
@@ -28,6 +29,16 @@ public:
     cp8_tls_writer &operator=(cp8_tls_writer &&)      = delete;
 
 protected:
+    // stamp of a record: the user clock when p8_initialize got one, the system clock otherwise
+    uint64_t get_ticks() const
+    {
+        if(nullptr != ml_timer_value) [[unlikely]]
+        {
+            return ml_timer_value(mp_timer_ctx);
+        }
+        return kit::get_hires_ticks();
+    }
+
     // Attributes of a record in one pass, iz_record bytes into it: the record stays within P8_MAX_RECORD_SIZE (a
     // string is cut on a UTF-8 boundary, a value without room is skipped) and holds at most 255 attributes; one that
     // does not fit the buffer continues in the next buffers byte by byte
@@ -87,6 +98,10 @@ protected:
     std::atomic<uint64_t> mu_dropped_logs { 0 };
     std::atomic<uint64_t> mu_dropped_metrics { 0 };
     std::atomic<uint64_t> mu_dropped_traces { 0 };
+
+    // the core's clock, copied once, see get_ticks
+    l_p8_get_timer_value ml_timer_value { nullptr };
+    void                *mp_timer_ctx { nullptr };
 
     cp8_tls_writer *mp_next_writer = nullptr;
     cp8_tls_writer *mp_prev_writer = nullptr;

@@ -2319,3 +2319,36 @@ TEST_F(c_log_content_test, log_functions_share_one_writer_per_thread)
 
     EXPECT_EQ(lz_after, lz_before + 1);
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: a user clock given to p8_initialize stamps the records
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// a user clock that stands still, so every stamp it gives is known
+static uint64_t get_still_ticks(void *)
+{
+    return 0x0123456789ABCDEFull;
+}
+
+TEST_F(c_log_content_test, log_records_take_the_user_clock)
+{
+    // the fixture core has no user clock: start one that has
+    p8_release();
+    const std::string  ls_config = make_mem_config(/*buffers*/ 16);
+    struct s_p8_config lo_config = {};
+    lo_config.mp_json_config     = ls_config.c_str();
+    lo_config.ml_timer_value     = get_still_ticks;
+    lo_config.mu_timer_numer     = 1000; // a tick is 1 microsecond
+    lo_config.mu_timer_denom     = 1;
+    ASSERT_TRUE(p8_initialize(&lo_config));
+    p8_test_enable_buffer_capture();
+
+    std::thread lo_thread([]()
+                          { p8_log_sent(e_p8_trace0, nullptr, 0, 600, __FILE__, __FUNCTION__, 0, nullptr, "x"); });
+    lo_thread.join();
+
+    auto lo_items = parse_all_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_timestamp, get_still_ticks(nullptr));
+}
