@@ -1,10 +1,11 @@
-// Example: emit log records from 8 concurrent threads into the binary file
+// Example: emit log records from 4 concurrent threads into the binary file
 // ("file.bin") sink.
 //
 // P8 is initialized once with a JSON config that selects the file.bin sink and
 // points its "FileBin"."OutDir" at an output directory (argv[1], or ./p8_logs
-// by default). Eight worker threads then log concurrently through the shared,
-// lock-free client API; p8_release() flushes everything to disk on shutdown.
+// by default). Four worker threads then log concurrently through the shared,
+// lock-free client API. The main thread never logs and joins the workers first,
+// so p8_release() drops the last core reference and flushes everything to disk.
 //
 // The sink writes a per-run subdirectory containing <name>.p8svc (service
 // descriptors) and <name>.p8dat (the hello header plus all log data).
@@ -112,7 +113,8 @@ int main(int argc, char **argv)
         }
     }
 
-    // p8_release() drains buffered records to the sink and tears the core down.
+    // The workers have exited and the main thread never logged, so p8_release() drops the last core
+    // reference: it drains buffered records to the sink and tears the core down.
     P8_PROF_ZONE_NAMED("p8_release");
     p8_release();
 

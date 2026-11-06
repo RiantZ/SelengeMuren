@@ -75,7 +75,7 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
     }
 
     // write the fixed-size sample item (guaranteed to fit after the check above)
-    uint64_t lu_timestamp = kit::get_hires_ticks();
+    uint64_t lu_timestamp = get_ticks();
     {
         s_p8_mtk_item_dat *lp_hdr  = reinterpret_cast<s_p8_mtk_item_dat *>(mp_buffer + mz_buf_used);
 

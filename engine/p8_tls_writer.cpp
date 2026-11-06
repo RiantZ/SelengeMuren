@@ -18,6 +18,8 @@ cp8_tls_writer::cp8_tls_writer(kit::c_spin_lock *ip_lock)
         mp_core->addref();
         mz_buf_max = mp_core->get_buffer_size();
         mp_core->register_writer(this);
+        ml_timer_value = mp_core->get_timer_value();
+        mp_timer_ctx   = mp_core->get_timer_ctx();
     }
 }
 

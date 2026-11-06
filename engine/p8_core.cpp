@@ -182,10 +182,11 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
         return;
     }
 
+    init_clock(ip_config);
+
     // in clock ticks once, so the worker's per-cycle checks are plain compares
-    uint64_t lu_freq_numer = 0;
-    uint64_t lu_freq_denom = 0;
-    kit::get_hires_ticks_freq(lu_freq_numer, lu_freq_denom);
+    uint64_t lu_freq_numer = mu_clock_numer;
+    uint64_t lu_freq_denom = mu_clock_denom;
     if(lu_freq_numer)
     {
         mu_batch_margin_ticks
@@ -196,7 +197,7 @@ cp8_core::cp8_core(const struct s_p8_config *ip_config)
             = static_cast<uint64_t>(P8_CORE_IDLE_BATCH_INTERVAL_MS) * 1000000ULL * lu_freq_denom / lu_freq_numer;
     }
 
-    init_header(ip_config);
+    init_header();
 
     std::string ls_sink_value;
 
@@ -367,7 +368,25 @@ bool cp8_core::init_buffer_pool(const char *ip_max_memory_size, const char *ip_i
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool cp8_core::init_header(const struct s_p8_config *ip_config)
+// one clock for the header, records and batches: the user's when its callback and ratio are given, the system one
+// otherwise
+void cp8_core::init_clock(const struct s_p8_config *ip_config)
+{
+    if(ip_config->ml_timer_value && 0 != ip_config->mu_timer_numer && 0 != ip_config->mu_timer_denom)
+    {
+        ml_timer_value = ip_config->ml_timer_value;
+        mp_timer_ctx   = ip_config->mp_ctx_timer;
+        mu_clock_numer = ip_config->mu_timer_numer;
+        mu_clock_denom = ip_config->mu_timer_denom;
+    }
+    else
+    {
+        kit::get_hires_ticks_freq(mu_clock_numer, mu_clock_denom);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool cp8_core::init_header()
 {
     std::memset(&mo_hdr, 0, sizeof(mo_hdr));
 
@@ -377,24 +396,14 @@ bool cp8_core::init_header(const struct s_p8_config *ip_config)
     uint32_t lu_endian         = 0x1;
     mo_hdr.mu_is_big_endian    = (*reinterpret_cast<uint8_t *>(&lu_endian) == 0) ? 1 : 0;
 
-    mo_hdr.mi_utc_sec_offset   = static_cast<int8_t>(kit::get_utc_offset_seconds() / 3600);
+    mo_hdr.mi_utc_sec_offset   = static_cast<int32_t>(kit::get_utc_offset_seconds());
     mo_hdr.mu_size             = static_cast<uint32_t>(sizeof(struct s_p8_hdr));
     mo_hdr.mu_process_id       = kit::get_process_id();
     mo_hdr.mu_system_time      = kit::get_system_time();
 
-    // TODO: use this callbacks by logs, traces, metrics
-    if(ip_config->ml_timer_value && ip_config->ml_timer_frequency)
-    {
-        mo_hdr.mu_hires_tick       = ip_config->ml_timer_value(ip_config->mp_ctx_timer);
-        uint64_t lu_freq           = ip_config->ml_timer_frequency(ip_config->mp_ctx_timer);
-        mo_hdr.mu_hires_freq_numer = 1000000000ULL;
-        mo_hdr.mu_hires_freq_denom = lu_freq;
-    }
-    else
-    {
-        mo_hdr.mu_hires_tick = kit::get_hires_ticks();
-        kit::get_hires_ticks_freq(mo_hdr.mu_hires_freq_numer, mo_hdr.mu_hires_freq_denom);
-    }
+    mo_hdr.mu_hires_tick       = get_ticks();
+    mo_hdr.mu_hires_freq_numer = mu_clock_numer;
+    mo_hdr.mu_hires_freq_denom = mu_clock_denom;
 
     kit::get_process_name(mo_hdr.mp_process_name, sizeof(mo_hdr.mp_process_name));
     kit::get_host_name(mo_hdr.mp_host_name, sizeof(mo_hdr.mp_host_name));
@@ -1211,7 +1220,7 @@ void cp8_core::drain_writers(kit::c_lst<uint8_t *> &io_data)
 uint64_t cp8_core::collect_batch(kit::c_lst<uint8_t *> &io_data)
 {
     // before any writer lock: a buffer this batch misses is started after its writer's pull, so at or after it
-    const uint64_t lu_now = kit::get_hires_ticks();
+    const uint64_t lu_now = get_ticks();
     const uint64_t lu_ts  = (lu_now > mu_batch_margin_ticks) ? lu_now - mu_batch_margin_ticks : 0;
 
     drain_writers(io_data);
@@ -1779,6 +1788,28 @@ lbl_exit:
 uint64_t cp8_core::reserve_span_ids()
 {
     return mu_span_id_seq.fetch_add(P8_CORE_SPAN_ID_BLOCK, std::memory_order_relaxed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint64_t cp8_core::get_ticks() const
+{
+    if(nullptr != ml_timer_value)
+    {
+        return ml_timer_value(mp_timer_ctx);
+    }
+    return kit::get_hires_ticks();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+l_p8_get_timer_value cp8_core::get_timer_value() const
+{
+    return ml_timer_value;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void *cp8_core::get_timer_ctx() const
+{
+    return mp_timer_ctx;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
