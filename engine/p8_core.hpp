@@ -41,6 +41,17 @@
 // While idle, the worker sends an empty batch packet this often, so the server sees the stream alive.
 #define P8_CORE_IDLE_BATCH_INTERVAL_MS 5000
 
+// iz_len moved back to the start of the UTF-8 sequence it falls in, so a cut string stays valid UTF-8;
+// ip_str must hold more than iz_len bytes
+inline size_t p8_cut_utf8(const char *ip_str, size_t iz_len)
+{
+    while(iz_len > 0 && 0x80 == (static_cast<uint8_t>(ip_str[iz_len]) & 0xC0))
+    {
+        --iz_len;
+    }
+    return iz_len;
+}
+
 class cp8_tls_writer;
 struct s_p8_log_desc;
 struct s_p8_log_mod;
@@ -134,7 +145,8 @@ public:
     void submit_buffer(uint8_t *ip_buffer);
     void submit_chain(kit::c_lst<uint8_t *> &io_buffers);
 
-    // log descriptors
+    // log descriptors: a new one is serialized before it is returned, waiting for a buffer when the service buffer is
+    // full, so call it without locks held; nullptr when no buffer comes (shutdown) or allocation fails
     s_p8_log_desc *resolve_log_desc(uint64_t    iu_hash,
                                     const char *ip_file,
                                     uint32_t    iu_line,
@@ -200,11 +212,13 @@ private:
     uint8_t encode_attr_blob(std::vector<uint8_t> &or_blob, const struct s_p8_attr_val *ip_attrs, size_t iz_attrs);
 
     // service-data serialization (log + attr + module + metric descriptors). All
-    // helpers below assume mo_svc_mutex is held by the caller.
-    s_p8_svc_buf *svc_acquire_new();
-    uint8_t      *svc_reserve(size_t iz_padded);
+    // helpers below assume mo_svc_mutex is held by the caller; given that lock, they wait
+    // for a new buffer with it unlocked instead of dropping the entry, and fail only on
+    // shutdown or for an entry larger than a buffer.
+    s_p8_svc_buf *svc_acquire_new(std::unique_lock<std::mutex> *iop_lock);
+    uint8_t      *svc_reserve(size_t iz_padded, std::unique_lock<std::mutex> *iop_lock = nullptr);
     void          serialize_attr_desc(const s_p8_attr_desc *ip_desc);
-    void          serialize_log_desc(const struct s_p8_log_desc *ip_desc);
+    bool          serialize_log_desc(const struct s_p8_log_desc *ip_desc, std::unique_lock<std::mutex> &io_lock);
     void          serialize_log_mod(const s_p8_log_mod *ip_mod);
     void          serialize_mtk_desc(const struct s_p8_mtk_desc *ip_desc,
                                      const uint8_t              *ip_attr_blob,

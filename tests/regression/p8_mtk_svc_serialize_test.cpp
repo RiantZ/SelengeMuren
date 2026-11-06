@@ -376,3 +376,39 @@ TEST_F(c_mtk_svc_serialize_test, duplicate_conflicting_definition_fails)
     // none of the failed attempts added another descriptor for this name
     EXPECT_EQ(count_mtk_entries(li_id), 1);
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// strings longer than P8_SVC_STR_MAX_LEN are cut to it, back to the start of a split UTF-8 character
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(c_mtk_svc_serialize_test, long_strings_cut_at_max_len_on_utf8_boundary)
+{
+    const std::string lo_name(P8_SVC_STR_MAX_LEN, 'n');
+    const std::string lo_desc(P8_SVC_STR_MAX_LEN + 476, 'd');
+    // a 3-byte character on bytes P8_SVC_STR_MAX_LEN - 2 to P8_SVC_STR_MAX_LEN
+    const std::string lo_unit = std::string(P8_SVC_STR_MAX_LEN - 2, 'u') + "\xE2\x82\xAC" + "u";
+
+    s_p8_mtk_base lo_base     = {};
+    lo_base.mp_name           = lo_name.c_str();
+    lo_base.mp_description    = lo_desc.c_str();
+    lo_base.mp_unit           = lo_unit.c_str();
+
+    h_p8_mtk_id li_id         = create_mtk_in_thread(&lo_base);
+    ASSERT_TRUE(P8_IS_METRIC_VALID(li_id));
+
+    s_svc_entry lo_entry;
+    ASSERT_TRUE(find_mtk_entry(collect_service_entries(), li_id, lo_entry));
+
+    s_p8_mtk_svc lo_mtk = {};
+    memcpy(&lo_mtk, lo_entry.mo_bytes.data(), sizeof(lo_mtk));
+    EXPECT_EQ(lo_mtk.mu_name_len, P8_SVC_STR_MAX_LEN);
+    EXPECT_EQ(lo_mtk.mu_desc_len, P8_SVC_STR_MAX_LEN);
+    EXPECT_EQ(lo_mtk.mu_unit_len, P8_SVC_STR_MAX_LEN - 2);
+
+    size_t lz_off = sizeof(s_p8_mtk_svc);
+    EXPECT_EQ(read_str(lo_entry.mo_bytes, lz_off, lo_mtk.mu_name_len), lo_name);
+    lz_off += lo_mtk.mu_name_len;
+    EXPECT_EQ(read_str(lo_entry.mo_bytes, lz_off, lo_mtk.mu_desc_len), lo_desc.substr(0, P8_SVC_STR_MAX_LEN));
+    lz_off += lo_mtk.mu_desc_len;
+    EXPECT_EQ(read_str(lo_entry.mo_bytes, lz_off, lo_mtk.mu_unit_len), lo_unit.substr(0, P8_SVC_STR_MAX_LEN - 2));
+}

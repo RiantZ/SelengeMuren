@@ -232,6 +232,103 @@ static std::vector<s_parsed_item> parse_all_items()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// placed parser: like parse_all_items, plus where each record starts in its buffer
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct s_placed_item
+{
+    size_t               mz_buf;     // captured buffer the record starts in
+    size_t               mz_off;     // record offset in that buffer
+    s_p8_log_item_dat    mo_hdr;
+    std::vector<uint8_t> mo_payload; // args, attrs and padding, joined across buffers
+};
+
+static std::vector<s_placed_item> parse_placed_items()
+{
+    std::vector<s_placed_item> lo_items;
+    size_t                     lz_left = 0; // bytes of the current record still to come
+
+    p8_test_drain_writers();
+
+    const auto &lo_bufs = p8_test_get_captured_buffers();
+    for(size_t lz_buf = 0; lz_buf < lo_bufs.size(); ++lz_buf)
+    {
+        const auto       &lr_buf = lo_bufs[lz_buf];
+        s_p8_data_buf_hdr lo_hdr = {};
+        memcpy(&lo_hdr, lr_buf.data(), sizeof(s_p8_data_buf_hdr));
+
+        const size_t lz_end = std::min<size_t>(lo_hdr.mu_size, lr_buf.size());
+        size_t       lz_off = sizeof(s_p8_data_buf_hdr);
+        while(lz_off < lz_end)
+        {
+            if(0 == lz_left)
+            {
+                // a record header is never split
+                s_placed_item lo_item = {};
+                if(lz_off + sizeof(s_p8_log_item_dat) > lz_end)
+                {
+                    return lo_items;
+                }
+                memcpy(&lo_item.mo_hdr, lr_buf.data() + lz_off, sizeof(s_p8_log_item_dat));
+                if(lo_item.mo_hdr.mu_size < sizeof(s_p8_log_item_dat))
+                {
+                    return lo_items;
+                }
+                lo_item.mz_buf  = lz_buf;
+                lo_item.mz_off  = lz_off;
+                lz_left         = lo_item.mo_hdr.mu_size - sizeof(s_p8_log_item_dat);
+                lz_off         += sizeof(s_p8_log_item_dat);
+                lo_items.push_back(std::move(lo_item));
+                continue;
+            }
+
+            const size_t lz_take = std::min(lz_left, lz_end - lz_off);
+            lo_items.back().mo_payload.insert(lo_items.back().mo_payload.end(),
+                                              lr_buf.data() + lz_off,
+                                              lr_buf.data() + lz_off + lz_take);
+            lz_off  += lz_take;
+            lz_left -= lz_take;
+        }
+    }
+
+    return lo_items;
+}
+
+// Count the log descriptor entries with iu_hash in the service buffers; or_entry gets the last one.
+static size_t find_log_desc(uint64_t iu_hash, std::vector<uint8_t> &or_entry)
+{
+    size_t lz_count = 0;
+
+    for(const auto &lr_buf : p8_test_get_service_buffers())
+    {
+        size_t lz_off = 0;
+        while(lz_off + sizeof(s_p8_svc_hdr) <= lr_buf.size())
+        {
+            s_p8_svc_hdr lo_hdr = {};
+            memcpy(&lo_hdr, lr_buf.data() + lz_off, sizeof(lo_hdr));
+            if(lo_hdr.mu_size < sizeof(s_p8_svc_hdr) || lz_off + lo_hdr.mu_size > lr_buf.size())
+            {
+                break;
+            }
+
+            s_p8_log_item_svc lo_desc = {};
+            if(P8_SVC_TYPE_LOG_DESC == lo_hdr.mu_svc_type && lo_hdr.mu_size >= sizeof(s_p8_log_item_svc))
+            {
+                memcpy(&lo_desc, lr_buf.data() + lz_off, sizeof(lo_desc));
+                if(lo_desc.mu_hash == iu_hash)
+                {
+                    or_entry.assign(lr_buf.data() + lz_off, lr_buf.data() + lz_off + lo_hdr.mu_size);
+                    ++lz_count;
+                }
+            }
+            lz_off += lo_hdr.mu_size;
+        }
+    }
+
+    return lz_count;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // helper: run p8_log_sent in a separate thread so TLS destructor releases the buffer
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1802,4 +1899,326 @@ TEST_F(c_log_content_test, verbosity_default_gates_null_module)
         __FILE__);
     EXPECT_TRUE(lo_at.mb_result);
     EXPECT_FALSE(parse_captured_buffers().mo_all_captured.empty());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Group: split pieces, dropped records and descriptors under buffer exhaustion
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// A piece that does not fit at the buffer end continues in the next buffer, so no buffer ends with a gap and the
+// next record stays 8-aligned.
+TEST_F(c_log_content_test, split_piece_keeps_next_record_8_aligned)
+{
+    const size_t lz_buf_sz = p8_test_get_buffer_size();
+    // bytes before the first string body: buffer header, record header, string length
+    const size_t lz_lead   = sizeof(s_p8_data_buf_hdr) + sizeof(s_p8_log_item_dat) + sizeof(uint16_t);
+
+    p8_attr_id li_attr     = p8_attr_register("split_i64", e_p8_attr_i64);
+    ASSERT_TRUE(P8_IS_ATTR_VALID(li_attr));
+
+    struct s_p8_attr_val lo_av = {};
+    lo_av.m_id                 = li_attr;
+    lo_av.mi_i64               = 0x1122334455667788LL;
+
+    // the piece cut by the buffer end: 0 - int argument, 1 - string length, 2 - attribute
+    const size_t la_piece[]    = { P8_SIZE_OF_ARG(uint32_t), sizeof(uint16_t), sizeof(p8_attr_id) + sizeof(uint64_t) };
+
+    for(int li_kind = 0; li_kind < 3; ++li_kind)
+    {
+        for(size_t lz_room = 1; lz_room < la_piece[li_kind]; ++lz_room)
+        {
+            SCOPED_TRACE(testing::Message() << "kind " << li_kind << ", room " << lz_room);
+            p8_test_clear_captured_buffers();
+
+            // the string leaves lz_room bytes in the first buffer, too few for the next piece
+            const std::string lo_str(lz_buf_sz - lz_lead - lz_room, 'S');
+
+            std::thread lo_thread(
+                [&]()
+                {
+                    if(0 == li_kind)
+                    {
+                        p8_log_sent(e_p8_trace0,
+                                    nullptr,
+                                    0,
+                                    static_cast<uint32_t>(__LINE__),
+                                    __FILE__,
+                                    __FUNCTION__,
+                                    0,
+                                    nullptr,
+                                    "%s%d",
+                                    lo_str.c_str(),
+                                    1234);
+                    }
+                    else if(1 == li_kind)
+                    {
+                        p8_log_sent(e_p8_trace0,
+                                    nullptr,
+                                    0,
+                                    static_cast<uint32_t>(__LINE__),
+                                    __FILE__,
+                                    __FUNCTION__,
+                                    0,
+                                    nullptr,
+                                    "%s%s",
+                                    lo_str.c_str(),
+                                    "tail");
+                    }
+                    else
+                    {
+                        p8_log_sent(e_p8_trace0,
+                                    nullptr,
+                                    0,
+                                    static_cast<uint32_t>(__LINE__),
+                                    __FILE__,
+                                    __FUNCTION__,
+                                    1,
+                                    &lo_av,
+                                    "%s",
+                                    lo_str.c_str());
+                    }
+
+                    p8_log_sent(e_p8_trace0,
+                                nullptr,
+                                0,
+                                static_cast<uint32_t>(__LINE__),
+                                __FILE__,
+                                __FUNCTION__,
+                                0,
+                                nullptr,
+                                "%d",
+                                5678);
+                });
+            lo_thread.join();
+
+            auto lo_items = parse_placed_items();
+            ASSERT_EQ(lo_items.size(), 2u);
+
+            for(const auto &lr_item : lo_items)
+            {
+                EXPECT_EQ(lr_item.mz_off % 8u, 0u) << "record in buffer " << lr_item.mz_buf << " is not 8-aligned";
+            }
+
+            for(const auto &lr_buf : p8_test_get_captured_buffers())
+            {
+                s_p8_data_buf_hdr lo_hdr = {};
+                memcpy(&lo_hdr, lr_buf.data(), sizeof(lo_hdr));
+                if(lo_hdr.mu_flags & P8_DATA_FLAG_FRAGMENT)
+                {
+                    EXPECT_EQ(lo_hdr.mu_size, lz_buf_sz) << "a buffer that continues in the next one has a gap";
+                }
+            }
+
+            // the split piece is intact
+            size_t lz_off = 0;
+            if(0 == li_kind)
+            {
+                EXPECT_EQ(read_string(lo_items[0].mo_payload, lz_off), lo_str);
+                EXPECT_EQ(read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t)), 1234u);
+            }
+            else if(1 == li_kind)
+            {
+                EXPECT_EQ(read_string(lo_items[0].mo_payload, lz_off), lo_str);
+                EXPECT_EQ(read_string(lo_items[0].mo_payload, lz_off), "tail");
+            }
+            else
+            {
+                lz_off = lo_items[0].mo_hdr.mu_args_size;
+                EXPECT_EQ(read_val<p8_attr_id>(lo_items[0].mo_payload, lz_off, sizeof(p8_attr_id)), li_attr);
+                EXPECT_EQ(read_val<int64_t>(lo_items[0].mo_payload, lz_off, sizeof(int64_t)), lo_av.mi_i64);
+            }
+
+            lz_off = 0;
+            EXPECT_EQ(read_val<uint32_t>(lo_items[1].mo_payload, lz_off, P8_SIZE_OF_ARG(uint32_t)), 5678u);
+        }
+    }
+}
+
+// A dropped record gives back the numbers of the buffers it took, so the server sees no gap in mu_buf_seq.
+TEST_F(c_log_content_test, dropped_record_gives_back_buffer_numbers)
+{
+    const size_t lz_buf_sz = p8_test_get_buffer_size();
+    // fills the first buffer to its end, so the next record starts in a new buffer
+    const std::string lo_fill(lz_buf_sz - sizeof(s_p8_data_buf_hdr) - sizeof(s_p8_log_item_dat) - sizeof(uint16_t),
+                              'F');
+    // needs three buffers
+    const std::string      lo_huge(lz_buf_sz * 2, 'H');
+    std::vector<uint8_t *> lo_held;
+    bool                   lb_fill  = false;
+    bool                   lb_huge  = true;
+    bool                   lb_after = false;
+
+    std::thread lo_thread(
+        [&]()
+        {
+            auto lf_send = [](const std::string &ir_str)
+            {
+                return p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "%s",
+                                   ir_str.c_str());
+            };
+
+            lb_fill = lf_send(lo_fill);
+
+            // two free buffers: the huge record takes both, then fails on the third
+            while(p8_test_get_free_buffers_count() > 2)
+            {
+                uint8_t *lp_buf = p8_test_acquire_buffer();
+                if(!lp_buf)
+                {
+                    break;
+                }
+                lo_held.push_back(lp_buf);
+            }
+            lb_huge = lf_send(lo_huge);
+
+            for(uint8_t *lp_buf : lo_held)
+            {
+                p8_test_release_buffer(lp_buf);
+            }
+            lo_held.clear();
+
+            lb_after = lf_send("after");
+        });
+    lo_thread.join();
+
+    EXPECT_TRUE(lb_fill);
+    EXPECT_FALSE(lb_huge);
+    EXPECT_TRUE(lb_after);
+    EXPECT_EQ(p8_test_get_dropped_stats().mu_logs, 1u);
+
+    p8_test_drain_writers();
+    const auto &lo_bufs = p8_test_get_captured_buffers();
+    ASSERT_EQ(lo_bufs.size(), 2u);
+    for(size_t lz_i = 0; lz_i < lo_bufs.size(); ++lz_i)
+    {
+        s_p8_data_buf_hdr lo_hdr = {};
+        memcpy(&lo_hdr, lo_bufs[lz_i].data(), sizeof(lo_hdr));
+        EXPECT_EQ(lo_hdr.mu_buf_seq, lz_i) << "gap in the buffer numbers of the writer";
+    }
+}
+
+// With one free buffer left the descriptor takes it and the record is dropped: a record never goes out before its
+// descriptor, and the descriptor is sent once.
+TEST_F(c_log_content_test, record_never_sent_without_its_descriptor)
+{
+    std::vector<uint8_t *> lo_held;
+    bool                   lb_first  = true;
+    bool                   lb_second = false;
+
+    std::thread lo_thread(
+        [&]()
+        {
+            auto lf_send = []()
+            {
+                return p8_log_sent(e_p8_trace0,
+                                   nullptr,
+                                   0,
+                                   static_cast<uint32_t>(__LINE__),
+                                   __FILE__,
+                                   __FUNCTION__,
+                                   0,
+                                   nullptr,
+                                   "%d",
+                                   7);
+            };
+
+            while(p8_test_get_free_buffers_count() > 1)
+            {
+                uint8_t *lp_buf = p8_test_acquire_buffer();
+                if(!lp_buf)
+                {
+                    break;
+                }
+                lo_held.push_back(lp_buf);
+            }
+            lb_first = lf_send();
+
+            for(uint8_t *lp_buf : lo_held)
+            {
+                p8_test_release_buffer(lp_buf);
+            }
+            lo_held.clear();
+
+            lb_second = lf_send();
+        });
+    lo_thread.join();
+
+    EXPECT_FALSE(lb_first);
+    EXPECT_TRUE(lb_second);
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    for(const auto &lr_item : lo_items)
+    {
+        std::vector<uint8_t> lo_entry;
+        EXPECT_EQ(find_log_desc(lr_item.mo_hdr.mu_hash, lo_entry), 1u) << "record sent without its descriptor";
+    }
+}
+
+// Descriptor strings longer than P8_SVC_STR_MAX_LEN are cut to it, back to the start of a split UTF-8 character.
+TEST_F(c_log_content_test, descriptor_strings_cut_at_max_len_on_utf8_boundary)
+{
+    const uint32_t    lu_line = 7;
+    const std::string lo_exact(P8_SVC_STR_MAX_LEN, 'e');
+    const std::string lo_over(P8_SVC_STR_MAX_LEN + 476, 'o');
+    // a 2-byte character on bytes P8_SVC_STR_MAX_LEN - 1 and P8_SVC_STR_MAX_LEN
+    const std::string lo_utf8 = std::string(P8_SVC_STR_MAX_LEN - 1, 'u') + "\xC3\xA9" + std::string(100, 'u');
+    const std::string lo_func(P8_SVC_STR_MAX_LEN + 476, 'f');
+
+    struct s_case
+    {
+        const std::string *mp_file;
+        size_t             mz_len; // expected file length on the wire
+    };
+    const s_case la_cases[] = {
+        { &lo_exact, P8_SVC_STR_MAX_LEN     },
+        { &lo_over,  P8_SVC_STR_MAX_LEN     },
+        { &lo_utf8,  P8_SVC_STR_MAX_LEN - 1 },
+    };
+
+    std::thread lo_thread(
+        [&]()
+        {
+            for(const s_case &lr_case : la_cases)
+            {
+                p8_log_sent(e_p8_trace0,
+                            nullptr,
+                            0,
+                            lu_line,
+                            lr_case.mp_file->c_str(),
+                            lo_func.c_str(),
+                            0,
+                            nullptr,
+                            "%d",
+                            1);
+            }
+        });
+    lo_thread.join();
+
+    for(const s_case &lr_case : la_cases)
+    {
+        SCOPED_TRACE(testing::Message() << "file of " << lr_case.mp_file->size() << " bytes");
+
+        std::vector<uint8_t> lo_entry;
+        ASSERT_EQ(find_log_desc(P8_GET_LOG_HASH(lr_case.mp_file->c_str(), lu_line), lo_entry), 1u);
+
+        s_p8_log_item_svc lo_desc = {};
+        memcpy(&lo_desc, lo_entry.data(), sizeof(lo_desc));
+        EXPECT_EQ(lo_desc.mu_file_len, lr_case.mz_len);
+        EXPECT_EQ(lo_desc.mu_function_len, P8_SVC_STR_MAX_LEN);
+        ASSERT_GE(lo_entry.size(), sizeof(s_p8_log_item_svc) + lo_desc.mu_file_len + lo_desc.mu_function_len);
+
+        const char *lp_var = reinterpret_cast<const char *>(lo_entry.data() + sizeof(s_p8_log_item_svc));
+        EXPECT_EQ(std::string(lp_var, lo_desc.mu_file_len), lr_case.mp_file->substr(0, lr_case.mz_len));
+        EXPECT_EQ(std::string(lp_var + lo_desc.mu_file_len, lo_desc.mu_function_len),
+                  lo_func.substr(0, P8_SVC_STR_MAX_LEN));
+    }
 }
