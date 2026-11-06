@@ -82,8 +82,8 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `send_hello_d_no_attrs` | 19.3 ns | 1 000 000 |
-| `send_hello_d_3_attrs` (str + i64 + f64) | 30.7 ns | 1 000 000 |
+| `send_hello_d_no_attrs` | 16.8 ns | 1 000 000 |
+| `send_hello_d_3_attrs` (str + i64 + f64) | 25.4 ns | 1 000 000 |
 
 `full_cycle` throughput (init + emit + release) through the in-memory null sink,
 1 000 000 iterations per thread. Numbers are aggregated over 25 runs of the test
@@ -91,15 +91,10 @@ Single-thread emit latency (`c_log_perf_test`, 32 batches x 1 000 000 iterations
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 25.9 ns | 31.7 ns | 2.61 ns | 38.6 M calls/s |
-| 2 | 2 000 000 | 8.9 ns  | 9.0 ns  | 0.10 ns | 112.6 M calls/s |
-| 4 | 4 000 000 | 4.9 ns  | 5.0 ns  | 0.07 ns | 205.3 M calls/s |
-| 8 | 8 000 000 | 4.2 ns  | 4.5 ns  | 0.11 ns | 237.0 M calls/s |
-
-Under backpressure the single-thread run is the least stable (stdev ≈ 2.6 ns, p95 well
-above the median): with one producer and one worker they either keep pace or the
-producer briefly blocks on the worker's recycle rate, run to run. From 2 threads up the
-worker stays saturated and the spread collapses to a few percent.
+| 1 | 1 000 000 | 17.3 ns | 17.5 ns | 0.23 ns | 58.0 M calls/s |
+| 2 | 2 000 000 | 9.0 ns  | 9.1 ns  | 0.09 ns | 111.6 M calls/s |
+| 4 | 4 000 000 | 4.9 ns  | 4.9 ns  | 0.06 ns | 205.0 M calls/s |
+| 8 | 8 000 000 | 4.2 ns  | 4.4 ns  | 0.05 ns | 235.5 M calls/s |
 
 #### Metrics
 
@@ -109,17 +104,17 @@ Single-thread emit latency (`c_mtk_perf_test`, 32 batches x 1 000 000 iterations
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `emit_single_thread` | 11.9 ns | 1 000 000 |
+| `emit_single_thread` | 10.8 ns | 1 000 000 |
 
 `full_cycle` throughput (emit through the in-memory null sink), 1 000 000 iterations
 per thread, aggregated over 25 runs:
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 13.7 ns | 15.0 ns | 1.31 ns | 73.2 M calls/s |
-| 2 | 2 000 000 | 5.7 ns  | 6.3 ns  | 0.25 ns | 175.6 M calls/s |
-| 4 | 4 000 000 | 3.2 ns  | 3.3 ns  | 0.05 ns | 315.5 M calls/s |
-| 8 | 8 000 000 | 2.1 ns  | 2.2 ns  | 0.03 ns | 477.1 M calls/s |
+| 1 | 1 000 000 | 10.8 ns | 11.3 ns | 0.25 ns | 92.9 M calls/s |
+| 2 | 2 000 000 | 5.5 ns  | 5.6 ns  | 0.07 ns | 183.0 M calls/s |
+| 4 | 4 000 000 | 2.9 ns  | 3.0 ns  | 0.05 ns | 345.5 M calls/s |
+| 8 | 8 000 000 | 2.0 ns  | 2.1 ns  | 0.02 ns | 494.8 M calls/s |
 
 #### Traces
 
@@ -130,20 +125,18 @@ Single-thread span latency (`c_trc_perf_test`, 32 batches x 1 000 000 iterations
 
 | Test | Per call | Iterations |
 |------|----------|------------|
-| `begin_end_no_attrs` | 29.8 ns | 1 000 000 |
-| `begin_end_3_attrs` (str + i64 + f64) | 41.8 ns | 1 000 000 |
+| `begin_end_no_attrs` | 27.9 ns | 1 000 000 |
+| `begin_end_3_attrs` (str + i64 + f64) | 33.0 ns | 1 000 000 |
 
 `full_cycle` throughput (init + emit + release) through the in-memory null sink,
 1 000 000 spans per thread, aggregated over 25 runs:
 
 | Threads | Total calls | Median ns/call | p95 ns/call | Stdev | Throughput (median) |
 |---------|-------------|----------------|-------------|-------|---------------------|
-| 1 | 1 000 000 | 40.7 ns | 56.8 ns | 8.51 ns | 24.6 M calls/s |
-| 2 | 2 000 000 | 15.0 ns | 16.1 ns | 1.08 ns | 66.8 M calls/s |
-| 4 | 4 000 000 | 8.1 ns  | 8.4 ns  | 0.17 ns | 123.4 M calls/s |
-| 8 | 8 000 000 | 5.5 ns  | 5.6 ns  | 0.15 ns | 183.2 M calls/s |
-
-As with logs, the single-thread run is the least stable (stdev ≈ 8.5 ns, p95 well above the median).
+| 1 | 1 000 000 | 27.8 ns | 29.9 ns | 1.17 ns | 36.0 M calls/s |
+| 2 | 2 000 000 | 14.3 ns | 14.5 ns | 0.10 ns | 69.9 M calls/s |
+| 4 | 4 000 000 | 7.4 ns  | 8.0 ns  | 0.51 ns | 134.7 M calls/s |
+| 8 | 8 000 000 | 5.4 ns  | 5.6 ns  | 0.07 ns | 185.6 M calls/s |
 
 ### Profiling with Tracy
 
