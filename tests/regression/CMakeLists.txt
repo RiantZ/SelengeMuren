@@ -51,6 +51,7 @@ add_executable(${PROJECT_NAME}
     p8_mtk_perf_test.cpp
     p8_acquire_fifo_test.cpp
     p8_trc_content_test.cpp
+    p8_trc_perf_test.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${P8_API} ${CMAKE_SOURCE_DIR}/engine)
