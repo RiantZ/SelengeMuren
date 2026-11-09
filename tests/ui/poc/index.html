@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebGL2 Metrics POC</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #ececec;
+  --panel: #ffffff;
+  --line: #b9b9b9;
+  --fg: #1d1d1d;
+  --muted: #666666;
+  --sel: #2f7fd0;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 210px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.35 system-ui, -apple-system, "Segoe UI", Ubuntu, Arial, sans-serif;
+  overflow: hidden;
+}
+#toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 5px 10px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(#f7f7f7, #e4e4e4);
+}
+#toolbar b { font-weight: 600; }
+#toolbar label, #toolbar .hint { color: var(--muted); }
+select, button {
+  font: inherit; color: var(--fg); background: #fff;
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px;
+}
+button { cursor: pointer; }
+button.on { background: #d9ecff; border-color: var(--sel); }
+#plot { position: relative; min-height: 0; margin: 6px 6px 0; border: 1px solid var(--line); background: var(--panel); }
+#plot canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+#gl { cursor: grab; touch-action: none; }
+#gl.drag { cursor: grabbing; }
+.overlay { pointer-events: none; }
+#bottom {
+  display: grid; grid-template-columns: minmax(0, 1fr) 380px;
+  margin: 6px; border: 1px solid var(--line); background: #fff; min-height: 0;
+}
+#counters { overflow: auto; }
+#counters table { border-collapse: collapse; width: 100%; }
+#counters th, #counters td { text-align: left; padding: 1px 8px; white-space: nowrap; }
+#counters th { position: sticky; top: 0; background: #f1f1f1; font-weight: 500; border-bottom: 1px solid var(--line); }
+#counters tr:nth-child(even) td { background: #f7f7f7; }
+#counters td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+#stats { border-left: 1px solid var(--line); padding: 4px 8px; overflow: auto; }
+#stats pre { margin: 0; font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+#err { color: #b00020; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <b>WebGL2 · метрики (POC)</b>
+  <label>счётчики <select id="sel-n"><option>9</option><option>18</option><option>36</option><option>72</option></select></label>
+  <label>частота × <select id="sel-mult">
+    <option value="1">1</option><option value="10">10</option><option value="100">100</option>
+    <option value="1000">1 000</option><option value="10000">10 000</option>
+  </select></label>
+  <label>сеть RTT <select id="sel-rtt">
+    <option value="0">0 мс</option><option value="20">20 мс</option><option value="50">50 мс</option><option value="100">100 мс</option>
+  </select></label>
+  <label>маркеры <select id="sel-marks"><option value="auto">авто</option><option value="off">выкл</option></select></label>
+  <label>плавный зум <select id="sel-smooth"><option value="on">вкл</option><option value="off">выкл</option></select></label>
+  <button id="btn-live">▶ live</button>
+  <span class="hint">тянуть ЛКМ — сдвиг · колесо — масштаб · Space — live · Home — начало · End — конец · F — всё</span>
+</div>
+<div id="plot">
+  <canvas id="gl"></canvas>
+  <canvas id="txt-static" class="overlay"></canvas>
+  <canvas id="txt-dyn" class="overlay"></canvas>
+</div>
+<div id="bottom">
+  <div id="counters"></div>
+  <div id="stats"><pre id="hud">запуск…</pre><div id="err"></div></div>
+</div>
+<script src="signals.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
