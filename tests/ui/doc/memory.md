@@ -72,6 +72,16 @@ Measured in headless Chrome 156 (60 Hz cap, DPR 1, M4 Max): 9 counters JS 0.1 ms
 GPU 3-5 ms (two runs), and each server reply is 10.3 MB, because it grows with counters x pixels.
 Safari and Firefox were not run.
 
+DISPLAY MODEL (user, 2026-11-09, corrected me): the time scale is discrete, every X px (e.g. 16) is one time unit.
+The server takes all raw samples of every visible counter in each cell and computes one value per cell (average or
+p99, depending on the display type), then sends only those points. Example: 10 ms window, X = 16, 160 px -> 10 points
+(0..9 ms). So a reply is always KB to hundreds of KB (counters x cells x ~4 B; time is the cell index).
+My POC's 10.3 MB came from my own choice (M4 per pixel column, 1-2 columns per pixel, +-50% margins), not from the
+architecture; tests/ui/doc/conclusions.md, README.md and memory.md on lau/ui-experiment were corrected on
+2026-11-09 (the POC code itself still uses M4, by the user's choice). Server consequences I raised: long windows
+need block summaries next to the raw data; avg/min/max/count merge exactly, p99 does not (raw pass or a mergeable
+sketch such as DDSketch / t-digest); avg hides short spikes, hence max/p99 views.
+
 **Why:** the user picks the client stack from this analysis. Repeating these searches every session wastes time.
 **How to apply:** retention is still open, so don't push it. The user declined a hotkey tester page
 (2026-11-09), don't offer it again. Don't push a choice ([[p8-user-working-style]]). Re-check the browser
