@@ -8,8 +8,6 @@
 
 #include "kit/time.hpp"
 
-#define P8_LOG_MIN_BUFFER_SPACE 32 // Minimal remaining space in data buffer
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 enum e_prefix_type
 {
@@ -374,13 +372,17 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     s_p8_attrs_result  lo_attrs         = {};
     size_t             lz_frag_commit   = 0;
     uint16_t           lu_mod_id        = 0xFFFF;
+    uint8_t            lu_flags         = 0;
+    size_t             lz_opt           = 0;       // bytes of the optional fields
+    uint8_t           *lp_attrs_head    = nullptr; // args size and attrs count, filled after the attributes
     enum e_p8_level    le_min           = e_p8_trace0;
 
     // verbosity gate: reject records below the module's threshold (or the whole-p8 default for a null module)
     if(ip_module)
     {
-        le_min    = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mb_vervosity.load(std::memory_order_relaxed);
-        lu_mod_id = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mu_id;
+        le_min     = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mb_vervosity.load(std::memory_order_relaxed);
+        lu_mod_id  = reinterpret_cast<const s_p8_log_mod *>(ip_module)->mu_id;
+        lu_flags  |= P8_LOG_FLAG_MODULE;
     }
     else if(mp_core)
     {
@@ -462,21 +464,43 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
     // write item header
     {
-        uint8_t *lp_base       = mp_buffer + mz_buf_used;
-        lp_buf_end             = mp_buffer + mz_buf_max;
+        uint8_t *lp_base = mp_buffer + mz_buf_used;
+        lp_buf_end       = mp_buffer + mz_buf_max;
 
-        lp_hdr                 = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
-        lp_hdr->mu_hash        = lp_desc->mu_hash;
-        lp_hdr->mu_timestamp   = get_ticks();
-        lp_hdr->mu_trace_id    = iu_trace_id;
-        lp_hdr->mu_thread_id   = mu_thread_id;
-        lp_hdr->mu_level       = static_cast<uint8_t>(ie_level);
-        lp_hdr->mu_processor   = 0; // TODO: get current processor CORE
-        lp_hdr->mu_attrs_count = 0;
-        lp_hdr->mu_mod_id      = lu_mod_id;
-        lp_hdr->mu_flags       = 0;
+        if(P8_INVALID_SPAN != iu_trace_id)
+        {
+            lu_flags |= P8_LOG_FLAG_TRACE_ID;
+        }
+        if(ip_attrs && (0 != iz_attrs))
+        {
+            lu_flags |= P8_LOG_FLAG_ATTRS;
+        }
 
-        lp_dst                 = lp_base + sizeof(struct s_p8_log_item_dat);
+        lp_hdr               = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
+        lp_hdr->mu_hash      = lp_desc->mu_hash;
+        lp_hdr->mu_timestamp = get_ticks();
+        lp_hdr->mu_thread_id = mu_thread_id;
+        lp_hdr->mu_level     = static_cast<uint8_t>(ie_level);
+        lp_hdr->mu_flags     = lu_flags;
+
+        // the optional fields in flag order; no CPU core ID yet (P8_LOG_FLAG_PROCESSOR)
+        lp_dst               = lp_base + sizeof(struct s_p8_log_item_dat);
+        if(0 != (lu_flags & P8_LOG_FLAG_TRACE_ID))
+        {
+            memcpy(lp_dst, &iu_trace_id, sizeof(iu_trace_id));
+            lp_dst += sizeof(iu_trace_id);
+        }
+        if(0 != (lu_flags & P8_LOG_FLAG_MODULE))
+        {
+            memcpy(lp_dst, &lu_mod_id, sizeof(lu_mod_id));
+            lp_dst += sizeof(lu_mod_id);
+        }
+        if(0 != (lu_flags & P8_LOG_FLAG_ATTRS))
+        {
+            lp_attrs_head  = lp_dst;
+            lp_dst        += sizeof(uint16_t) + sizeof(uint8_t);
+        }
+        lz_opt = static_cast<size_t>(lp_dst - lp_base) - sizeof(struct s_p8_log_item_dat);
     }
 
     // serialize variable arguments
@@ -574,13 +598,14 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         }
     }
 
-    lp_hdr->mu_args_size = static_cast<uint16_t>(lz_args_written);
-
     // serialize attributes with fragmentation support
     if(ip_attrs && iz_attrs)
     {
-        lo_attrs
-            = serialize_attrs(lp_dst, lp_buf_end, sizeof(s_p8_log_item_dat) + lz_args_written, ip_attrs, iz_attrs);
+        lo_attrs = serialize_attrs(lp_dst,
+                                   lp_buf_end,
+                                   sizeof(s_p8_log_item_dat) + lz_opt + lz_args_written,
+                                   ip_attrs,
+                                   iz_attrs);
         if(!lo_attrs.mb_done) [[unlikely]]
         {
             goto lbl_discard;
@@ -592,11 +617,16 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     // Pad the record to 8 bytes so the next one starts 8-aligned: with no gaps the write offset is congruent to the
     // record size. Pad bytes stay as-is (consumers skip them via mu_size); a run of zeros would weaken encryption.
     {
-        size_t lz_size          = sizeof(s_p8_log_item_dat) + lz_args_written + lz_attrs_written;
-        size_t lz_pad           = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
-        lp_hdr->mu_attrs_count  = lu_attrs_count;
-        lp_hdr->mu_size         = static_cast<uint16_t>(lz_size + lz_pad);
-        lp_dst                 += lz_pad;
+        size_t lz_size   = sizeof(s_p8_log_item_dat) + lz_opt + lz_args_written + lz_attrs_written;
+        size_t lz_pad    = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
+        lp_hdr->mu_size  = static_cast<uint16_t>(lz_size + lz_pad);
+        lp_dst          += lz_pad;
+        if(lp_attrs_head)
+        {
+            const uint16_t lu_args_size = static_cast<uint16_t>(lz_args_written);
+            memcpy(lp_attrs_head, &lu_args_size, sizeof(lu_args_size));
+            memcpy(lp_attrs_head + sizeof(lu_args_size), &lu_attrs_count, sizeof(lu_attrs_count));
+        }
     }
 
     // update current buffer state

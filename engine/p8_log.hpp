@@ -7,7 +7,8 @@
 
 #include <unordered_map>
 
-#define P8_LOG_MAX_ARGS 32 // Max count of log variable arguments
+#define P8_LOG_MAX_ARGS         32 // Max count of log variable arguments
+#define P8_LOG_MIN_BUFFER_SPACE 32 // Minimal remaining space in data buffer
 
 struct s_p8_log_desc
 {
