@@ -1529,34 +1529,110 @@ TEST_F(c_log_content_test, no_args_no_attrs)
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size, expected_item_size(sizeof(s_p8_log_item_dat)));
 }
 
-TEST_F(c_log_content_test, string_truncated_to_uint16_max)
+TEST_F(c_log_content_test, string_arg_is_cut_to_fit_its_record)
 {
-    std::string lo_huge(static_cast<size_t>(UINT16_MAX) + 1000, 'T');
+    const std::string lo_huge(static_cast<size_t>(UINT16_MAX) + 1000, 'T');
 
-    auto lo_ctx = run_send_in_thread(
+    std::thread lo_thread(
         [&lo_huge]()
         {
-            return p8_log_sent(e_p8_trace0,
-                               nullptr,
-                               0,
-                               static_cast<uint32_t>(__LINE__),
-                               __FILE__,
-                               __FUNCTION__,
-                               0,
-                               nullptr,
-                               "%s",
-                               lo_huge.c_str());
-        },
-        __LINE__,
-        __FILE__);
-    ASSERT_TRUE(lo_ctx.mb_result);
+            p8_log_sent(e_p8_trace0, nullptr, 0, 400, __FILE__, __FUNCTION__, 0, nullptr, "%s", lo_huge.c_str());
+            p8_log_sent(e_p8_trace0, nullptr, 0, 401, __FILE__, __FUNCTION__, 0, nullptr, "next %d", 5);
+        });
+    lo_thread.join();
 
-    auto   lo_parsed = parse_captured_buffers();
-    size_t lz_off    = 0;
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 2u);
 
-    uint16_t lu_len  = read_string_len(lo_parsed.mo_args_payload, lz_off);
-    EXPECT_EQ(lu_len, UINT16_MAX);
+    // the 16-bit mu_size holds the record: the string takes the room left by the header and its length
+    const size_t lz_max = P8_MAX_RECORD_SIZE;
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, lz_max);
+    size_t lz_off = 0;
+    EXPECT_EQ(read_string_len(lo_items[0].mo_payload, lz_off), lz_max - lo_items[0].mo_hdr.mz_head - sizeof(uint16_t));
+
+    // the stream stays in step: the next record is found right after the cut one
+    EXPECT_EQ(lo_items[1].mo_hdr.mu_hash, P8_GET_LOG_HASH(__FILE__, 401));
 }
+
+TEST_F(c_log_content_test, string_args_leave_room_for_the_fixed_args)
+{
+    const std::string lo_a(static_cast<size_t>(UINT16_MAX), 'a');
+    const std::string lo_b(static_cast<size_t>(UINT16_MAX), 'b');
+
+    std::thread lo_thread(
+        [&]()
+        {
+            p8_log_sent(e_p8_trace0,
+                        nullptr,
+                        0,
+                        402,
+                        __FILE__,
+                        __FUNCTION__,
+                        0,
+                        nullptr,
+                        "%s %d %s",
+                        lo_a.c_str(),
+                        42,
+                        lo_b.c_str());
+        });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    EXPECT_LE(lo_items[0].mo_hdr.mu_size, P8_MAX_RECORD_SIZE);
+
+    // the first string takes all the room the int and both length fields leave; the second one is empty
+    size_t         lz_off = 0;
+    const uint16_t lu_a   = read_string_len(lo_items[0].mo_payload, lz_off);
+    EXPECT_EQ(lu_a, P8_MAX_RECORD_SIZE - lo_items[0].mo_hdr.mz_head - P8_SIZE_OF_ARG(int) - 2 * sizeof(uint16_t));
+    lz_off += lu_a;
+    EXPECT_EQ(read_val<uint32_t>(lo_items[0].mo_payload, lz_off, P8_SIZE_OF_ARG(int)), 42u);
+    EXPECT_EQ(read_string_len(lo_items[0].mo_payload, lz_off), 0u);
+}
+
+TEST_F(c_log_content_test, utf8_string_arg_is_cut_on_a_character_boundary)
+{
+    std::string lo_euros;
+    for(size_t lz_i = 0; lz_i < 30000; ++lz_i)
+    {
+        lo_euros += "\xE2\x82\xAC"; // U+20AC, 3 bytes
+    }
+
+    std::thread lo_thread(
+        [&lo_euros]()
+        { p8_log_sent(e_p8_trace0, nullptr, 0, 403, __FILE__, __FUNCTION__, 0, nullptr, "%s", lo_euros.c_str()); });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    const size_t lz_room = P8_MAX_RECORD_SIZE - lo_items[0].mo_hdr.mz_head - sizeof(uint16_t);
+    size_t       lz_off  = 0;
+    const size_t lz_len  = read_string_len(lo_items[0].mo_payload, lz_off);
+    EXPECT_EQ(lz_len % 3, 0u);
+    EXPECT_LE(lz_len, lz_room);
+    EXPECT_GT(lz_len + 3, lz_room);
+}
+
+#if !defined(G_OS_WINDOWS)
+TEST_F(c_log_content_test, wide_string_arg_is_cut_on_a_whole_character)
+{
+    const std::wstring lo_wide(30000, L'w');
+
+    std::thread lo_thread(
+        [&lo_wide]()
+        { p8_log_sent(e_p8_trace0, nullptr, 0, 404, __FILE__, __FUNCTION__, 0, nullptr, "%ls", lo_wide.c_str()); });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    const size_t lz_room = P8_MAX_RECORD_SIZE - lo_items[0].mo_hdr.mz_head - sizeof(uint16_t);
+    size_t       lz_off  = 0;
+    const size_t lz_len  = read_string_len(lo_items[0].mo_payload, lz_off);
+    EXPECT_EQ(lz_len % sizeof(wchar_t), 0u);
+    EXPECT_LE(lz_len, lz_room);
+    EXPECT_GT(lz_len + sizeof(wchar_t), lz_room);
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Group 8: multiple p8_log_sent calls in a single thread

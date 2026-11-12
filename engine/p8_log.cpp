@@ -375,6 +375,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
     uint8_t            lu_flags         = 0;
     size_t             lz_opt           = 0;       // bytes of the optional fields
     uint8_t           *lp_attrs_head    = nullptr; // args size and attrs count, filled after the attributes
+    size_t             lz_str_room      = 0;       // bytes the string args may still take
     enum e_p8_level    le_min           = e_p8_trace0;
 
     // verbosity gate: reject records below the module's threshold (or the whole-p8 default for a null module)
@@ -503,6 +504,14 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lz_opt = static_cast<size_t>(lp_dst - lp_base) - sizeof(struct s_p8_log_item_dat);
     }
 
+    // the string args fill what the fixed args and every string's length leave, so the record keeps within
+    // P8_MAX_RECORD_SIZE and its 16-bit mu_size; the attributes get what is left after the args
+    {
+        const size_t lz_reserved = sizeof(s_p8_log_item_dat) + lz_opt + lp_desc->mz_fixed_args_size
+                                   + lp_desc->mz_str_args_count * sizeof(uint16_t);
+        lz_str_room              = (lz_reserved < P8_MAX_RECORD_SIZE) ? P8_MAX_RECORD_SIZE - lz_reserved : 0;
+    }
+
     // serialize variable arguments
     {
         const s_p8_log_varg *lp_arg     = lp_desc->ma_args;
@@ -532,7 +541,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                             lp_zero++;
                         }
                         size_t lz_bytes = (lp_zero - lp_u16) * sizeof(uint16_t);
-                        lu_len          = (lz_bytes > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_bytes);
+                        if(lz_bytes > lz_str_room)
+                        {
+                            lz_bytes = p8_cut_utf16(lp_u16, lz_str_room);
+                        }
+                        lu_len = static_cast<uint16_t>(lz_bytes);
                     }
                 }
                 else if(P8_LOG_ARG_TYPE_USTR32 == lp_arg->mu_type)
@@ -542,7 +555,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     if(lp_w)
                     {
                         size_t lz_bytes = wcslen(lp_w) * sizeof(wchar_t);
-                        lu_len          = (lz_bytes > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_bytes);
+                        if(lz_bytes > lz_str_room)
+                        {
+                            lz_bytes = lz_str_room - lz_str_room % sizeof(wchar_t);
+                        }
+                        lu_len = static_cast<uint16_t>(lz_bytes);
                     }
                 }
                 else
@@ -552,10 +569,15 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     if(lp_c)
                     {
                         size_t lz_slen = strlen(lp_c);
-                        lu_len         = (lz_slen > UINT16_MAX) ? UINT16_MAX : static_cast<uint16_t>(lz_slen);
+                        if(lz_slen > lz_str_room)
+                        {
+                            lz_slen = p8_cut_utf8(lp_c, lz_str_room);
+                        }
+                        lu_len = static_cast<uint16_t>(lz_slen);
                     }
                 }
 
+                lz_str_room -= lu_len;
                 P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_len, sizeof(lu_len), lz_args_written);
 
                 if(!copy_fragmented(lp_dst, lp_buf_end, lp_str, lu_len, lz_args_written))

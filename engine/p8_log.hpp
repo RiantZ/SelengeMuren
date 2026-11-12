@@ -19,6 +19,7 @@ struct s_p8_log_desc
     uint32_t      mu_line;
     size_t        mz_args_count;
     size_t        mz_fixed_args_size;
+    size_t        mz_str_args_count; // each takes a uint16_t length on the wire
     s_p8_log_varg ma_args[P8_LOG_MAX_ARGS];
 };
 

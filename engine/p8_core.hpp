@@ -56,6 +56,18 @@ inline size_t p8_cut_utf8(const char *ip_str, size_t iz_len)
     return iz_len;
 }
 
+// iz_bytes rounded down to whole UTF-16 units, without a high surrogate left alone at the end, so a cut string stays
+// valid UTF-16; ip_str must hold at least iz_bytes bytes
+inline size_t p8_cut_utf16(const uint16_t *ip_str, size_t iz_bytes)
+{
+    size_t lz_units = iz_bytes / sizeof(uint16_t);
+    if((lz_units > 0) && (0xD800 == (ip_str[lz_units - 1] & 0xFC00)))
+    {
+        --lz_units;
+    }
+    return lz_units * sizeof(uint16_t);
+}
+
 class cp8_tls_writer;
 struct s_p8_log_desc;
 struct s_p8_log_mod;
