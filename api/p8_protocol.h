@@ -28,7 +28,7 @@ extern "C"
 #define P8_PACKET_SERVICE       4 // service descriptors buffer (s_p8_svc_hdr entries: logs, attrs, threads, ...)
 #define P8_PACKET_BATCH         5 // opens a data batch (s_p8_batch), empty ones included
 
-#define P8_PROTOCOL_VERSION     1
+#define P8_PROTOCOL_VERSION     2
 
 #define P8_PROCESS_NAME_MAX_LEN 256
 #define P8_HOST_NAME_MAX_LEN    256
@@ -64,6 +64,13 @@ extern "C"
 #define P8_DATA_FLAG_RESERVED_5 (1 << 5)
 #define P8_DATA_FLAG_RESERVED_6 (1 << 6)
 #define P8_DATA_FLAG_RESERVED_7 (1 << 7)
+
+// Optional fields of a log record (s_p8_log_item_dat.mu_flags): a set flag means its field follows the header, in the
+// order of the flags below; a field is written only when the caller provides it
+#define P8_LOG_FLAG_TRACE_ID    (1 << 0) // uint64_t trace correlation ID (not P8_INVALID_SPAN)
+#define P8_LOG_FLAG_MODULE      (1 << 1) // uint16_t module ID (the record has a module)
+#define P8_LOG_FLAG_PROCESSOR   (1 << 2) // uint16_t CPU core ID (not written yet)
+#define P8_LOG_FLAG_ATTRS       (1 << 3) // uint16_t args size + uint8_t attrs count; the attributes follow the args
 
 // serialized argument types
 #define P8_ATTR_TYPE_STR        0x00 // utf-8 zero terminated string
@@ -218,27 +225,22 @@ extern "C"
 
     // Per-occurrence log record emitted into a P8_PACKET_LOGS buffer. References its
     // immutable descriptor (s_p8_log_item_svc) by mu_hash and carries the runtime data:
-    // timestamp, thread/processor, level, serialized var-args and attributes.
+    // timestamp, thread, level, the optional fields of mu_flags, serialized var-args and attributes.
+    // The header and the optional fields are never split between buffers; the rest may be (P8_DATA_FLAG_FRAGMENT).
     struct s_p8_log_item_dat
     {
         uint64_t mu_hash;      // log descriptor hash (key into descriptor tree)
         uint64_t mu_timestamp; // monotonic clock timestamp
-        uint64_t mu_trace_id;  // trace correlation ID
 
         // 64 bits
-        uint32_t mu_thread_id; // OS thread ID
+        uint32_t mu_thread_id; // the writer's thread id, as in s_p8_data_buf_hdr: std::hash of std::thread::id
+        uint16_t mu_size;      // total item size in bytes (header + optional fields + args + attrs + padding)
         uint8_t  mu_level;     // e_p8_level
-        uint8_t  mu_processor; // CPU core ID
-        uint16_t mu_args_size; // serialized variable arguments size in bytes
-
-        // 32 bits
-        uint16_t mu_size;   // total item size in bytes (header + args + attrs + padding)
-        uint16_t mu_mod_id; // module ID
-
-        // 16 bits
-        uint8_t mu_attrs_count; // number of serialized attributes
-        uint8_t mu_flags;       // todo
-        //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...
+        uint8_t  mu_flags;     // P8_LOG_FLAG_XXX: the optional fields that follow
+        //* optional fields, in flag order, unaligned:
+        //*   [uint64_t trace ID][uint16_t module ID][uint16_t CPU core ID][uint16_t args size + uint8_t attrs count]
+        //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...;
+        //* without P8_LOG_FLAG_ATTRS they fill the record up to the padding, read them by the descriptor's arg types
         //* Serialized attributes [p8_attr_id + data][...]
         //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b
         // alignement

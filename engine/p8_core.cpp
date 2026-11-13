@@ -1704,6 +1704,7 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
     lp_desc->mz_args_count      = cp8_log::parse_format_string(lp_desc->ma_args, P8_LOG_MAX_ARGS, ip_format);
 
     lp_desc->mz_fixed_args_size = 0;
+    lp_desc->mz_str_args_count  = 0;
     for(size_t lz_i = 0; lz_i < lp_desc->mz_args_count; lz_i++)
     {
         uint8_t lu_type = lp_desc->ma_args[lz_i].mu_type;
@@ -1711,6 +1712,10 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
            && lu_type != P8_LOG_ARG_TYPE_STRA)
         {
             lp_desc->mz_fixed_args_size += lp_desc->ma_args[lz_i].mu_size;
+        }
+        else
+        {
+            ++lp_desc->mz_str_args_count;
         }
     }
 

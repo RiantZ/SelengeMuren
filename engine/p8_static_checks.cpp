@@ -1,5 +1,6 @@
 #include "p8_client_api.h"
 #include "p8_protocol.h"
+#include "p8_log.hpp"
 
 #include <cstddef>
 
@@ -111,21 +112,18 @@ static_assert(offsetof(struct s_p8_log_item_svc, mu_args_count) == 22,
               "s_p8_log_item_svc::mu_args_count offset changed");
 
 // s_p8_log_item_dat
-static_assert(sizeof(struct s_p8_log_item_dat) == 40, "s_p8_log_item_dat wire size changed");
+static_assert(sizeof(struct s_p8_log_item_dat) == 24, "s_p8_log_item_dat wire size changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_hash) == 0, "s_p8_log_item_dat::mu_hash offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_timestamp) == 8, "s_p8_log_item_dat::mu_timestamp offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_trace_id) == 16, "s_p8_log_item_dat::mu_trace_id offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_thread_id) == 24,
+static_assert(offsetof(struct s_p8_log_item_dat, mu_thread_id) == 16,
               "s_p8_log_item_dat::mu_thread_id offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_level) == 28, "s_p8_log_item_dat::mu_level offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_processor) == 29,
-              "s_p8_log_item_dat::mu_processor offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_args_size) == 30,
-              "s_p8_log_item_dat::mu_args_size offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_size) == 32, "s_p8_log_item_dat::mu_size offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_attrs_count) == 36,
-              "s_p8_log_item_dat::mu_attrs_count offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 37, "s_p8_log_item_dat::mu_flags offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mu_size) == 20, "s_p8_log_item_dat::mu_size offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mu_level) == 22, "s_p8_log_item_dat::mu_level offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 23, "s_p8_log_item_dat::mu_flags offset changed");
+
+// log record optional fields (P8_LOG_FLAG_XXX): never split from the header, so all of them fit the reserved space
+static_assert(sizeof(uint64_t) + 3 * sizeof(uint16_t) + sizeof(uint8_t) <= P8_LOG_MIN_BUFFER_SPACE,
+              "the optional log record fields must fit the reserved buffer space");
 
 // s_p8_trc_item_svc
 static_assert(sizeof(struct s_p8_trc_item_svc) == 40, "s_p8_trc_item_svc wire size changed");
