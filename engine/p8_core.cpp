@@ -1085,14 +1085,12 @@ uint8_t *cp8_core::acquire_buffer(bool ib_wait)
     }
 #endif
 
-    // Fast path shared by both modes: take a buffer (grow-on-demand fires inside
-    // acquire_no_lock) and sample pressure under a single lock.
-    mp_data_pool->lock();
+    // Fast path shared by both modes: a buffer from the ring without the pool mutex, which the pool takes only to
+    // grow or to queue behind a waiter; then the pressure sample
     cp8_buffer_pool::s_stat ls_stat = {};
-    uint8_t                *lp_buf  = mp_data_pool->acquire_no_lock();
+    uint8_t                *lp_buf  = mp_data_pool->try_acquire();
 
     mp_data_pool->stat(ls_stat);
-    mp_data_pool->unlock();
 
     if(lp_buf)
     {
