@@ -296,15 +296,7 @@ bool cp8_sink_file::write_service(const kit::c_lst<s_p8_svc_buf> &ip_buffers)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void cp8_sink_file::flush()
 {
-    if(mo_svc_file.is_open())
-    {
-        mo_svc_file.sync();
-    }
-
-    if(mo_data_file.is_open())
-    {
-        mo_data_file.sync();
-    }
+    // no fsync here: writev already gave the data to the kernel, close() syncs the files once
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
