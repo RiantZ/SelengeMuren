@@ -12,11 +12,8 @@ extern "C"
 {
 #endif
 
-#ifdef GTX64
-    #define P8_SIZE_OF_ARG(t) ((uint8_t)(((sizeof(t)) + 7u) & ~7u))
-#else
-    #define P8_SIZE_OF_ARG(t) ((uint8_t)(((sizeof(t)) + 3u) & ~3u))
-#endif
+// a fixed log argument takes its size rounded up to 4: smaller integers come promoted to int through varargs
+#define P8_SIZE_OF_ARG(t)       ((uint8_t)(((sizeof(t)) + 3u) & ~3u))
 
 #define P8_PACKET_MAX_SIZE      (1 << 16) // 64KB max page
 

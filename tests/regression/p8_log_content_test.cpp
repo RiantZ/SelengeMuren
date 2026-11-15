@@ -2524,7 +2524,7 @@ TEST_F(c_log_content_test, record_without_optional_fields_is_its_header_and_args
     ASSERT_EQ(lo_items.size(), 1u);
     EXPECT_EQ(lo_items[0].mo_hdr.mu_flags, 0u);
     EXPECT_EQ(lo_items[0].mo_hdr.mz_head, sizeof(s_p8_log_item_dat));
-    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, sizeof(s_p8_log_item_dat) + P8_SIZE_OF_ARG(uint32_t));
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, expected_item_size(sizeof(s_p8_log_item_dat) + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, trace_id_follows_the_header)

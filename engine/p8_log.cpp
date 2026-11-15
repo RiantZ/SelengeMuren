@@ -588,15 +588,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             }
             default:
             {
-#if defined(GTX32)
-                if(4 == lp_arg->mu_size)
+                if(sizeof(uint32_t) == lp_arg->mu_size)
                 {
                     unsigned int lu_val = va_arg(io_args, unsigned int);
                     P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_val, sizeof(lu_val), lz_args_written);
                 }
-                else
-#endif
-                    if(sizeof(uint64_t) == lp_arg->mu_size)
+                else if(sizeof(uint64_t) == lp_arg->mu_size)
                 {
                     if(P8_LOG_ARG_TYPE_DOUBLE != lp_arg->mu_type) [[likely]]
                     {
