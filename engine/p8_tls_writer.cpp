@@ -67,6 +67,7 @@ bool cp8_tls_writer::rotate_fragment_buffer()
     lp_buf_hdr->mu_thread_id   = mu_thread_id;
     lp_buf_hdr->mu_writer_id   = mu_writer_id;
     lp_buf_hdr->mu_buf_seq     = mu_buf_seq++;
+    lp_buf_hdr->mu_base_ts     = get_ticks();
 
     mz_buf_used                = sizeof(s_p8_data_buf_hdr);
 

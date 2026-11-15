@@ -68,8 +68,12 @@ struct s_log_item
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// false when the header or its optional fields do not fit the iz_avail bytes at ip_rec
-static bool read_item_head(const uint8_t *ip_rec, size_t iz_avail, s_log_item &or_item)
+// false when the header or its optional fields do not fit the iz_avail bytes at ip_rec; ir_buf is the header of the
+// buffer the record starts in, it gives the record its time base and thread
+static bool read_item_head(const s_p8_data_buf_hdr &ir_buf,
+                           const uint8_t           *ip_rec,
+                           size_t                   iz_avail,
+                           s_log_item              &or_item)
 {
     s_p8_log_item_dat lo_hdr  = {};
     size_t            lz_off  = sizeof(lo_hdr);
@@ -91,8 +95,8 @@ static bool read_item_head(const uint8_t *ip_rec, size_t iz_avail, s_log_item &o
     }
     memcpy(&lo_hdr, ip_rec, sizeof(lo_hdr));
     or_item.mu_hash      = lo_hdr.mu_hash;
-    or_item.mu_timestamp = lo_hdr.mu_timestamp;
-    or_item.mu_thread_id = lo_hdr.mu_thread_id;
+    or_item.mu_timestamp = ir_buf.mu_base_ts + lo_hdr.mu_ts_delta;
+    or_item.mu_thread_id = ir_buf.mu_thread_id;
     or_item.mu_size      = lo_hdr.mu_size;
     or_item.mu_level     = lo_hdr.mu_level;
     or_item.mu_flags     = lo_hdr.mu_flags;
@@ -152,7 +156,10 @@ static s_log_content_parsed parse_captured_buffers()
 
     size_t lz_item_off = sizeof(s_p8_data_buf_hdr);
     if((lo_first.size() < lz_item_off)
-       || !read_item_head(lo_first.data() + lz_item_off, lo_first.size() - lz_item_off, lo_result.mo_item_hdr))
+       || !read_item_head(lo_result.mo_buf_hdr,
+                          lo_first.data() + lz_item_off,
+                          lo_first.size() - lz_item_off,
+                          lo_result.mo_item_hdr))
     {
         return lo_result;
     }
@@ -250,6 +257,8 @@ static std::vector<s_parsed_item> parse_all_items()
     }
 
     std::vector<uint8_t> lo_stream;
+    // where each buffer's data starts in lo_stream, with the buffer header
+    std::vector<std::pair<size_t, s_p8_data_buf_hdr>> lo_starts;
     for(const auto &lo_buf : lo_bufs)
     {
         s_p8_data_buf_hdr lo_hdr = {};
@@ -266,15 +275,25 @@ static std::vector<s_parsed_item> parse_all_items()
         size_t lz_start = sizeof(s_p8_data_buf_hdr);
         if(lz_used > lz_start)
         {
+            lo_starts.emplace_back(lo_stream.size(), lo_hdr);
             lo_stream.insert(lo_stream.end(), lo_buf.data() + lz_start, lo_buf.data() + lz_used);
         }
     }
 
-    size_t lz_pos = 0;
+    size_t            lz_pos     = 0;
+    size_t            lz_next    = 0;
+    s_p8_data_buf_hdr lo_cur_hdr = {};
     while(lz_pos + sizeof(s_p8_log_item_dat) <= lo_stream.size())
     {
+        // the header of the buffer this record starts in
+        while((lz_next < lo_starts.size()) && (lo_starts[lz_next].first <= lz_pos))
+        {
+            lo_cur_hdr = lo_starts[lz_next].second;
+            ++lz_next;
+        }
+
         s_parsed_item lo_item = {};
-        if(!read_item_head(lo_stream.data() + lz_pos, lo_stream.size() - lz_pos, lo_item.mo_hdr)
+        if(!read_item_head(lo_cur_hdr, lo_stream.data() + lz_pos, lo_stream.size() - lz_pos, lo_item.mo_hdr)
            || (lo_item.mo_hdr.mu_size < lo_item.mo_hdr.mz_head))
         {
             break;
@@ -334,7 +353,7 @@ static std::vector<s_placed_item> parse_placed_items()
             {
                 // a record header and its optional fields are never split
                 s_placed_item lo_item = {};
-                if(!read_item_head(lr_buf.data() + lz_off, lz_end - lz_off, lo_item.mo_hdr)
+                if(!read_item_head(lo_hdr, lr_buf.data() + lz_off, lz_end - lz_off, lo_item.mo_hdr)
                    || (lo_item.mo_hdr.mu_size < lo_item.mo_hdr.mz_head))
                 {
                     return lo_items;

@@ -81,7 +81,8 @@ struct s_trc_parsed
 s_trc_parsed parse_captured_traces()
 {
     s_trc_parsed                                                 lo_result;
-    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>> lo_streams; // writer id -> buf_seq -> payload
+    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>> lo_streams;  // writer id -> buf_seq -> payload
+    std::map<uint32_t, std::map<uint32_t, s_p8_data_buf_hdr>>    lo_buf_hdrs; // writer id -> buf_seq -> header
 
     p8_test_drain_writers();
 
@@ -104,16 +105,19 @@ s_trc_parsed parse_captured_traces()
         const size_t lz_used = std::min<size_t>(lo_hdr.mu_size, lr_buf.size());
         lo_streams[lo_hdr.mu_writer_id][lo_hdr.mu_buf_seq].assign(lr_buf.begin() + sizeof(lo_hdr),
                                                                   lr_buf.begin() + static_cast<ptrdiff_t>(lz_used));
+        lo_buf_hdrs[lo_hdr.mu_writer_id][lo_hdr.mu_buf_seq] = lo_hdr;
     }
 
     for(const auto &lr_writer : lo_streams)
     {
-        std::vector<uint8_t> lo_stream;
-        std::vector<size_t>  lo_starts; // stream offset of each buffer's payload
+        std::vector<uint8_t>           lo_stream;
+        std::vector<size_t>            lo_starts;    // stream offset of each buffer's payload
+        std::vector<s_p8_data_buf_hdr> lo_part_hdrs; // header of each buffer, as in lo_starts
         for(const auto &lr_part : lr_writer.second)
         {
             lo_result.mo_buf_seqs.push_back(lr_part.first);
             lo_starts.push_back(lo_stream.size());
+            lo_part_hdrs.push_back(lo_buf_hdrs[lr_writer.first][lr_part.first]);
             lo_stream.insert(lo_stream.end(), lr_part.second.begin(), lr_part.second.end());
         }
 
@@ -125,7 +129,7 @@ s_trc_parsed parse_captured_traces()
             const size_t lz_buf_off = sizeof(s_p8_data_buf_hdr) + (lz_off - *lo_part);
             EXPECT_EQ(lz_buf_off % 8, 0u) << "trace record at stream offset " << lz_off << " is not 8-aligned";
 
-            // timestamp, span ID, size, type and thread ID sit at the same offsets in every record
+            // span ID, time delta, size and type sit at the same offsets in every record
             s_p8_trc_end_dat lo_head = {};
             if(lz_off + sizeof(lo_head) > lo_stream.size())
             {
@@ -139,13 +143,16 @@ s_trc_parsed parse_captured_traces()
                 break;
             }
 
+            // the buffer the record starts in gives it the time base and the thread
+            const s_p8_data_buf_hdr &lr_part_hdr = lo_part_hdrs[static_cast<size_t>(lo_part - lo_starts.begin())];
+
             s_trc_rec lo_rec;
             lo_rec.mz_buf_off   = lz_buf_off;
             lo_rec.mu_writer_id = lr_writer.first;
             lo_rec.mu_type      = lo_head.mu_type;
             lo_rec.mu_size      = lo_head.mu_size;
-            lo_rec.mu_thread_id = lo_head.mu_thread_id;
-            lo_rec.mu_timestamp = lo_head.mu_timestamp;
+            lo_rec.mu_thread_id = lr_part_hdr.mu_thread_id;
+            lo_rec.mu_timestamp = lr_part_hdr.mu_base_ts + lo_head.mu_ts_delta;
             lo_rec.mu_span_id   = lo_head.mu_span_id;
 
             size_t lz_fixed     = sizeof(s_p8_trc_end_dat);

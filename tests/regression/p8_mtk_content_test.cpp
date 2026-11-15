@@ -56,6 +56,7 @@ struct s_mtk_parsed
 {
     s_p8_data_buf_hdr                 mo_buf_hdr = {};
     std::vector<s_p8_mtk_item_dat>    mo_items;
+    std::vector<uint64_t>             mo_times; // time of each item: its buffer's base time plus its delta
     std::vector<std::vector<uint8_t>> mo_all_captured;
 };
 
@@ -108,6 +109,7 @@ s_mtk_parsed parse_captured_metrics()
                 break;
             }
             lo_result.mo_items.push_back(lo_item);
+            lo_result.mo_times.push_back(lo_hdr.mu_base_ts + lo_item.mu_ts_delta);
             lz_off += lo_item.mu_size;
         }
     }
@@ -178,7 +180,7 @@ TEST_F(c_mtk_content_test, single_sample_fields)
     EXPECT_DOUBLE_EQ(lo_parsed.mo_items[0].md_value, 3.14);
     EXPECT_EQ(lo_parsed.mo_items[0].mu_size, static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat)));
     EXPECT_EQ(lo_parsed.mo_items[0].mu_attrs_count, 0u);
-    EXPECT_NE(lo_parsed.mo_items[0].mu_timestamp, 0u);
+    EXPECT_NE(lo_parsed.mo_times[0], 0u);
 }
 
 TEST_F(c_mtk_content_test, multiple_samples_preserve_order_and_values)
@@ -211,7 +213,7 @@ TEST_F(c_mtk_content_test, timestamps_are_monotonic)
     ASSERT_EQ(lo_parsed.mo_items.size(), 3u);
     for(size_t lz_i = 1; lz_i < lo_parsed.mo_items.size(); ++lz_i)
     {
-        EXPECT_GE(lo_parsed.mo_items[lz_i].mu_timestamp, lo_parsed.mo_items[lz_i - 1].mu_timestamp);
+        EXPECT_GE(lo_parsed.mo_times[lz_i], lo_parsed.mo_times[lz_i - 1]);
     }
 }
 
@@ -316,8 +318,8 @@ TEST_F(c_mtk_content_test, samples_take_the_user_clock)
 
     auto lo_parsed = parse_captured_metrics();
     ASSERT_EQ(lo_parsed.mo_items.size(), 2u);
-    for(const s_p8_mtk_item_dat &lr_item : lo_parsed.mo_items)
+    for(const uint64_t lu_time : lo_parsed.mo_times)
     {
-        EXPECT_EQ(lr_item.mu_timestamp, get_still_ticks(nullptr));
+        EXPECT_EQ(lu_time, get_still_ticks(nullptr));
     }
 }

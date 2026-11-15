@@ -134,6 +134,7 @@ bool cp8_trc::ensure_buffer(std::unique_lock<kit::c_spin_lock> &io_guard, size_t
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
         lp_buf_hdr->mu_writer_id      = mu_writer_id;
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
+        lp_buf_hdr->mu_base_ts        = get_ticks();
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -201,12 +202,11 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
     lz_frag_commit         = mo_fragments.size();
 
     lp_hdr                 = reinterpret_cast<s_p8_trc_begin_dat *>(mp_buffer + mz_buf_used);
-    lp_hdr->mu_timestamp   = get_ticks();
+    lp_hdr->mu_ts_delta    = get_ts_delta();
     lp_hdr->mu_span_id     = lu_span_id;
     lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_trc_begin_dat));
     lp_hdr->mu_type        = iu_type;
     lp_hdr->mu_attrs_count = 0;
-    lp_hdr->mu_thread_id   = mu_thread_id;
     lp_hdr->mu_hash        = lu_hash;
     lp_hdr->mu_parent_id   = iu_parent_id;
 
@@ -281,12 +281,11 @@ void cp8_trc::write_end(uint64_t iu_span_id)
     }
 
     s_p8_trc_end_dat *lp_rec  = reinterpret_cast<s_p8_trc_end_dat *>(mp_buffer + mz_buf_used);
-    lp_rec->mu_timestamp      = get_ticks();
+    lp_rec->mu_ts_delta       = get_ts_delta();
     lp_rec->mu_span_id        = iu_span_id;
     lp_rec->mu_size           = static_cast<uint16_t>(sizeof(s_p8_trc_end_dat));
     lp_rec->mu_type           = P8_TRC_ITEM_END;
     lp_rec->mu_padding        = 0;
-    lp_rec->mu_thread_id      = mu_thread_id;
 
     mz_buf_used              += sizeof(s_p8_trc_end_dat);
     reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer)->mu_size = static_cast<uint16_t>(mz_buf_used);

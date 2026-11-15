@@ -400,7 +400,8 @@ TEST_F(c_pull_test, empty_batch_follows_data_then_silence)
     const std::vector<std::vector<uint8_t>> &lr_bufs = p8_test_get_captured_buffers();
     ASSERT_EQ(lr_bufs.size(), 1u);
     const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
-    EXPECT_GT(lr_batches[1].mu_timestamp, reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_timestamp);
+    EXPECT_GT(lr_batches[1].mu_timestamp,
+              lp_hdr->mu_base_ts + reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_ts_delta);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -456,7 +457,8 @@ TEST_F(c_pull_test, early_wake_after_data_sends_nothing)
 
     // the empty packet covers the record, so the server can release it
     const s_p8_data_buf_hdr *lp_hdr = reinterpret_cast<const s_p8_data_buf_hdr *>(lr_bufs[0].data());
-    EXPECT_GT(lr_batches[1].mu_timestamp, reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_timestamp);
+    EXPECT_GT(lr_batches[1].mu_timestamp,
+              lp_hdr->mu_base_ts + reinterpret_cast<const s_p8_log_item_dat *>(lp_hdr + 1)->mu_ts_delta);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

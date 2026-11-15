@@ -70,21 +70,22 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
         lp_buf_hdr->mu_writer_id      = mu_writer_id;
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
+        lp_buf_hdr->mu_base_ts        = get_ticks();
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
 
     // write the fixed-size sample item (guaranteed to fit after the check above)
-    uint64_t lu_timestamp = get_ticks();
     {
         s_p8_mtk_item_dat *lp_hdr  = reinterpret_cast<s_p8_mtk_item_dat *>(mp_buffer + mz_buf_used);
 
-        lp_hdr->mu_timestamp       = lu_timestamp;
+        lp_hdr->mu_ts_delta        = get_ts_delta();
         lp_hdr->md_value           = id_value;
         lp_hdr->mi_id              = ih_id;
         lp_hdr->mu_size            = static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat));
         lp_hdr->mu_flags           = 0;
         lp_hdr->mu_attrs_count     = 0;
+        lp_hdr->mu_padding         = 0;
 
         mz_buf_used               += sizeof(s_p8_mtk_item_dat);
     }
