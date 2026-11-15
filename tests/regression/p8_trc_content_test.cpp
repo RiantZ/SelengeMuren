@@ -63,7 +63,8 @@ struct s_trc_rec
     uint32_t             mu_thread_id   = 0;
     uint64_t             mu_timestamp   = 0;
     uint64_t             mu_span_id     = 0;
-    uint64_t             mu_hash        = 0;
+    uint32_t             mu_desc_index  = 0;
+    uint64_t             mu_hash        = 0; // of the descriptor the begin record's number points to, 0 if not sent
     uint64_t             mu_parent_id   = 0;
     size_t               mz_buf_off     = 0; // record start inside the buffer it starts in
     std::vector<uint8_t> mo_tail;            // bytes after the fixed part: attributes and padding
@@ -77,13 +78,48 @@ struct s_trc_parsed
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// span descriptor hashes by descriptor number, from the service buffers
+std::map<uint32_t, uint64_t> get_trc_desc_hashes()
+{
+    std::map<uint32_t, uint64_t> lo_hashes;
+
+    for(const auto &lr_buf : p8_test_get_service_buffers())
+    {
+        size_t lz_off = 0;
+        while(lz_off + sizeof(s_p8_svc_hdr) <= lr_buf.size())
+        {
+            s_p8_svc_hdr lo_hdr = {};
+            memcpy(&lo_hdr, lr_buf.data() + lz_off, sizeof(lo_hdr));
+            if(lo_hdr.mu_size < sizeof(s_p8_svc_hdr) || lz_off + lo_hdr.mu_size > lr_buf.size())
+            {
+                break;
+            }
+
+            if(P8_SVC_TYPE_TRACE == lo_hdr.mu_svc_type && lo_hdr.mu_size >= sizeof(s_p8_trc_item_svc))
+            {
+                s_p8_trc_item_svc lo_desc = {};
+                memcpy(&lo_desc, lr_buf.data() + lz_off, sizeof(lo_desc));
+                lo_hashes[lo_desc.mu_index] = lo_desc.mu_hash;
+            }
+            lz_off += lo_hdr.mu_size;
+        }
+    }
+
+    return lo_hashes;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Drain the writers, join each writer's trace buffers in buf_seq order and split the stream into records
 s_trc_parsed parse_captured_traces()
 {
     s_trc_parsed                                                 lo_result;
-    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>> lo_streams; // writer id -> buf_seq -> payload
+    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>> lo_streams;  // writer id -> buf_seq -> payload
+    std::map<uint32_t, std::map<uint32_t, s_p8_data_buf_hdr>>    lo_buf_hdrs; // writer id -> buf_seq -> header
 
     p8_test_drain_writers();
+
+    // after the drain, so the descriptors of every drained span are in
+    const std::map<uint32_t, uint64_t> lo_desc_hashes = get_trc_desc_hashes();
 
     for(const auto &lr_buf : p8_test_get_captured_buffers())
     {
@@ -104,28 +140,31 @@ s_trc_parsed parse_captured_traces()
         const size_t lz_used = std::min<size_t>(lo_hdr.mu_size, lr_buf.size());
         lo_streams[lo_hdr.mu_writer_id][lo_hdr.mu_buf_seq].assign(lr_buf.begin() + sizeof(lo_hdr),
                                                                   lr_buf.begin() + static_cast<ptrdiff_t>(lz_used));
+        lo_buf_hdrs[lo_hdr.mu_writer_id][lo_hdr.mu_buf_seq] = lo_hdr;
     }
 
     for(const auto &lr_writer : lo_streams)
     {
-        std::vector<uint8_t> lo_stream;
-        std::vector<size_t>  lo_starts; // stream offset of each buffer's payload
+        std::vector<uint8_t>           lo_stream;
+        std::vector<size_t>            lo_starts;    // stream offset of each buffer's payload
+        std::vector<s_p8_data_buf_hdr> lo_part_hdrs; // header of each buffer, as in lo_starts
         for(const auto &lr_part : lr_writer.second)
         {
             lo_result.mo_buf_seqs.push_back(lr_part.first);
             lo_starts.push_back(lo_stream.size());
+            lo_part_hdrs.push_back(lo_buf_hdrs[lr_writer.first][lr_part.first]);
             lo_stream.insert(lo_stream.end(), lr_part.second.begin(), lr_part.second.end());
         }
 
         size_t lz_off = 0;
         while(lz_off < lo_stream.size())
         {
-            // the record starts in the last payload that begins at or before it; 64-bit reads need it 8-aligned
+            // the record starts in the last payload that begins at or before it; records sit 4-aligned
             const auto   lo_part    = std::upper_bound(lo_starts.begin(), lo_starts.end(), lz_off) - 1;
             const size_t lz_buf_off = sizeof(s_p8_data_buf_hdr) + (lz_off - *lo_part);
-            EXPECT_EQ(lz_buf_off % 8, 0u) << "trace record at stream offset " << lz_off << " is not 8-aligned";
+            EXPECT_EQ(lz_buf_off % 4, 0u) << "trace record at stream offset " << lz_off << " is not 4-aligned";
 
-            // timestamp, span ID, size, type and thread ID sit at the same offsets in every record
+            // span ID, time delta, size and type sit at the same offsets in every record
             s_p8_trc_end_dat lo_head = {};
             if(lz_off + sizeof(lo_head) > lo_stream.size())
             {
@@ -139,13 +178,16 @@ s_trc_parsed parse_captured_traces()
                 break;
             }
 
+            // the buffer the record starts in gives it the time base and the thread
+            const s_p8_data_buf_hdr &lr_part_hdr = lo_part_hdrs[static_cast<size_t>(lo_part - lo_starts.begin())];
+
             s_trc_rec lo_rec;
             lo_rec.mz_buf_off   = lz_buf_off;
             lo_rec.mu_writer_id = lr_writer.first;
             lo_rec.mu_type      = lo_head.mu_type;
             lo_rec.mu_size      = lo_head.mu_size;
-            lo_rec.mu_thread_id = lo_head.mu_thread_id;
-            lo_rec.mu_timestamp = lo_head.mu_timestamp;
+            lo_rec.mu_thread_id = lr_part_hdr.mu_thread_id;
+            lo_rec.mu_timestamp = lr_part_hdr.mu_base_ts + static_cast<int64_t>(lo_head.mi_ts_delta);
             lo_rec.mu_span_id   = lo_head.mu_span_id;
 
             size_t lz_fixed     = sizeof(s_p8_trc_end_dat);
@@ -159,9 +201,13 @@ s_trc_parsed parse_captured_traces()
                 }
                 memcpy(&lo_begin, lo_stream.data() + lz_off, sizeof(lo_begin));
                 lo_rec.mu_attrs_count = lo_begin.mu_attrs_count;
-                lo_rec.mu_hash        = lo_begin.mu_hash;
+                lo_rec.mu_desc_index  = lo_begin.mu_desc_index;
                 lo_rec.mu_parent_id   = lo_begin.mu_parent_id;
-                lz_fixed              = sizeof(lo_begin);
+                if(auto lo_it = lo_desc_hashes.find(lo_begin.mu_desc_index); lo_it != lo_desc_hashes.end())
+                {
+                    lo_rec.mu_hash = lo_it->second;
+                }
+                lz_fixed = sizeof(lo_begin);
             }
             lo_rec.mo_tail.assign(lo_stream.begin() + static_cast<ptrdiff_t>(lz_off + lz_fixed),
                                   lo_stream.begin() + static_cast<ptrdiff_t>(lz_off + lo_head.mu_size));
@@ -788,7 +834,7 @@ TEST_F(c_trc_content_test, begin_with_attributes_serializes_them)
                        reinterpret_cast<const uint8_t *>(&lu_len) + sizeof(lu_len));
     lo_expected.insert(lo_expected.end(), { 'h', 'e', 'l', 'l', 'o' });
 
-    const size_t lz_size = (sizeof(s_p8_trc_begin_dat) + lo_expected.size() + 7u) & ~static_cast<size_t>(7u);
+    const size_t lz_size = (sizeof(s_p8_trc_begin_dat) + lo_expected.size() + 3u) & ~static_cast<size_t>(3u);
     EXPECT_EQ(lr_begin.mu_size, lz_size);
     ASSERT_GE(lr_begin.mo_tail.size(), lo_expected.size());
     EXPECT_TRUE(std::equal(lo_expected.begin(), lo_expected.end(), lr_begin.mo_tail.begin()));
@@ -816,7 +862,7 @@ TEST_F(c_trc_content_test, record_larger_than_a_buffer_continues_in_next_buffer)
     EXPECT_EQ(lo_parsed.mz_fragmented_bufs, 1u);
 
     const size_t     lz_attr  = sizeof(p8_attr_id) + sizeof(uint16_t) + ls_blob.size();
-    const size_t     lz_size  = (sizeof(s_p8_trc_begin_dat) + lz_attr + 7u) & ~static_cast<size_t>(7u);
+    const size_t     lz_size  = (sizeof(s_p8_trc_begin_dat) + lz_attr + 3u) & ~static_cast<size_t>(3u);
     const s_trc_rec &lr_begin = lo_parsed.mo_recs[0];
     EXPECT_EQ(lr_begin.mu_attrs_count, 1u);
     EXPECT_EQ(lr_begin.mu_size, lz_size);
@@ -861,8 +907,9 @@ TEST_F(c_trc_content_test, number_split_across_buffers_keeps_next_record_aligned
 
     const s_trc_rec &lr_split = lo_parsed.mo_recs[0];
     const size_t     lz_num   = sizeof(p8_attr_id) + sizeof(uint16_t) + lz_fill;
+    const size_t     lz_rec   = sizeof(s_p8_trc_begin_dat) + lz_num + sizeof(p8_attr_id) + sizeof(uint64_t);
     EXPECT_EQ(lr_split.mu_attrs_count, 2u);
-    EXPECT_EQ(lr_split.mu_size, lz_payload + 8u);
+    EXPECT_EQ(lr_split.mu_size, (lz_rec + 3u) & ~static_cast<size_t>(3u));
     ASSERT_GE(lr_split.mo_tail.size(), lz_num + sizeof(p8_attr_id) + sizeof(uint64_t));
     p8_attr_id li_got_id = 0;
     uint64_t   lu_got    = 0;
@@ -871,8 +918,8 @@ TEST_F(c_trc_content_test, number_split_across_buffers_keeps_next_record_aligned
     EXPECT_EQ(li_got_id, li_split);
     EXPECT_EQ(lu_got, lu_value);
 
-    // 4 bytes of the number and 4 bytes of padding open the second buffer
-    EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr) + 8u);
+    // the rest of the number (and the padding, if any) opens the second buffer, the next record follows 4-aligned
+    EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr) + lr_split.mu_size - lz_payload);
 }
 
 TEST_F(c_trc_content_test, record_dropped_mid_write_leaves_no_trace)
@@ -992,7 +1039,7 @@ TEST_F(c_trc_content_test, oversized_attributes_are_cut_to_fit_the_record)
     const s_trc_rec *lp_2 = find_begin(lo_parsed.mo_recs, lu_ids[2]);
     ASSERT_NE(lp_2, nullptr);
     EXPECT_EQ(lp_2->mu_attrs_count, 255u);
-    EXPECT_EQ(lp_2->mu_size, (sizeof(s_p8_trc_begin_dat) + 255 * lz_num + 7u) & ~static_cast<size_t>(7u));
+    EXPECT_EQ(lp_2->mu_size, (sizeof(s_p8_trc_begin_dat) + 255 * lz_num + 3u) & ~static_cast<size_t>(3u));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

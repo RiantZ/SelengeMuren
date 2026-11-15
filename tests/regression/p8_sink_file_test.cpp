@@ -546,7 +546,7 @@ TEST_F(c_p8_sink_file_test, worker_batches_keep_the_timestamp_promise)
             // is 0
             s_p8_log_item_dat lo_item = {};
             std::memcpy(&lo_item, lo_content.data() + lz_off + sizeof(lo_hdr), sizeof(lo_item));
-            EXPECT_GE(lo_item.mu_timestamp, lu_prev_ts);
+            EXPECT_GE(lo_hdr.mu_base_ts + static_cast<int64_t>(lo_item.mi_ts_delta), lu_prev_ts);
             lz_off += lo_hdr.mu_size;
             ++lz_buffers;
         }

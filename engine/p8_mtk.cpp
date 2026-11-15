@@ -36,8 +36,8 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
 
     // buffer availability — reuse the current buffer while it can still hold a full
     // item; otherwise park it (drained later by the worker via pull()). Every item
-    // is a multiple of 8 bytes and so is the buffer header, so mz_buf_used stays
-    // 8-aligned without any per-item padding.
+    // is a multiple of 4 bytes and so is the buffer header, so mz_buf_used stays
+    // 4-aligned without any per-item padding.
     if(mp_buffer) [[likely]]
     {
         if((mz_buf_max - mz_buf_used) < sizeof(s_p8_mtk_item_dat)) [[unlikely]]
@@ -70,16 +70,16 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
         lp_buf_hdr->mu_writer_id      = mu_writer_id;
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
+        lp_buf_hdr->mu_base_ts        = get_ticks();
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
 
     // write the fixed-size sample item (guaranteed to fit after the check above)
-    uint64_t lu_timestamp = get_ticks();
     {
         s_p8_mtk_item_dat *lp_hdr  = reinterpret_cast<s_p8_mtk_item_dat *>(mp_buffer + mz_buf_used);
 
-        lp_hdr->mu_timestamp       = lu_timestamp;
+        lp_hdr->mi_ts_delta        = get_ts_delta();
         lp_hdr->md_value           = id_value;
         lp_hdr->mi_id              = ih_id;
         lp_hdr->mu_size            = static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat));

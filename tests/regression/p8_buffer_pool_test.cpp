@@ -545,3 +545,101 @@ TEST_F(c_p8_buffer_pool_test, destructor_wakes_parked_waiter)
     ASSERT_TRUE(lb_ok);
     EXPECT_EQ(lp_got.load(), nullptr);
 }
+
+TEST_F(c_p8_buffer_pool_test, concurrent_take_never_misses_a_free_buffer)
+{
+    // One buffer more than threads, and a thread holds at most one: every take has a free buffer, even when the only
+    // free one is that moment on its way back into the ring. A take must find it, as a take under a mutex would.
+    static constexpr size_t lz_thread_count = 8;
+    static constexpr size_t lz_iterations   = 200000;
+    static constexpr size_t lz_buffer_count = lz_thread_count + 1;
+
+    auto            lp_budget               = std::make_shared<cp8_memory_budget>(lz_buffer_count * 1024);
+    cp8_buffer_pool lo_pool(1024, lp_budget);
+    ASSERT_EQ(lo_pool.init(lz_buffer_count), lz_buffer_count);
+
+    std::atomic<uint64_t>    lu_misses { 0 };
+    std::latch               lo_start_latch(lz_thread_count);
+    std::vector<std::thread> lo_threads;
+    lo_threads.reserve(lz_thread_count);
+
+    for(size_t lz_i = 0; lz_i < lz_thread_count; ++lz_i)
+    {
+        lo_threads.emplace_back(
+            [&]()
+            {
+                lo_start_latch.arrive_and_wait();
+                for(size_t lz_j = 0; lz_j < lz_iterations; ++lz_j)
+                {
+                    uint8_t *lp_buf = nullptr;
+                    if(0 == (lz_j & 1))
+                    {
+                        lp_buf = lo_pool.try_acquire();
+                    }
+                    else
+                    {
+                        lo_pool.lock();
+                        lp_buf = lo_pool.acquire_no_lock();
+                        lo_pool.unlock();
+                    }
+
+                    if(!lp_buf)
+                    {
+                        lu_misses.fetch_add(1, std::memory_order_relaxed);
+                        continue;
+                    }
+                    lo_pool.recycle(lp_buf);
+                }
+            });
+    }
+
+    for(auto &lo_t : lo_threads)
+    {
+        lo_t.join();
+    }
+
+    EXPECT_EQ(lu_misses.load(), 0u);
+    EXPECT_EQ(lo_pool.get_free_count(), lz_buffer_count);
+}
+
+TEST_F(c_p8_buffer_pool_test, pool_without_budget_grows_past_its_ring)
+{
+    // more buffers than the ring of a pool without a budget has cells: the extra free ones must come back too
+    static constexpr size_t lz_count = 3000;
+
+    cp8_buffer_pool        lo_pool(64, nullptr);
+    std::vector<uint8_t *> lo_bufs;
+    lo_bufs.reserve(lz_count);
+
+    for(size_t lz_i = 0; lz_i < lz_count; ++lz_i)
+    {
+        lo_pool.lock();
+        uint8_t *lp_buf = lo_pool.acquire_no_lock();
+        lo_pool.unlock();
+        ASSERT_NE(lp_buf, nullptr);
+        lo_bufs.push_back(lp_buf);
+    }
+
+    for(uint8_t *lp_buf : lo_bufs)
+    {
+        lo_pool.recycle(lp_buf);
+    }
+    EXPECT_EQ(lo_pool.get_free_count(), lz_count);
+
+    // the same buffers again, none new
+    const std::unordered_set<uint8_t *> lo_known(lo_bufs.begin(), lo_bufs.end());
+    std::unordered_set<uint8_t *>       lo_seen;
+    for(size_t lz_i = 0; lz_i < lz_count; ++lz_i)
+    {
+        uint8_t *lp_buf = lo_pool.try_acquire();
+        ASSERT_NE(lp_buf, nullptr);
+        EXPECT_EQ(lo_known.count(lp_buf), 1u);
+        EXPECT_TRUE(lo_seen.insert(lp_buf).second);
+    }
+    EXPECT_EQ(lo_pool.get_free_count(), 0u);
+
+    for(uint8_t *lp_buf : lo_seen)
+    {
+        lo_pool.recycle(lp_buf);
+    }
+}

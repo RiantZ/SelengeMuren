@@ -6,7 +6,7 @@
 #include "kit/spin_lock.hpp"
 
 #include <mutex>
-#include <unordered_set>
+#include <unordered_map>
 
 class cp8_trc : public cp8_tls_writer
 {
@@ -47,9 +47,9 @@ private:
 
     void pop_span(uint64_t iu_span_id);
 
-    kit::c_spin_lock             mo_lock;
-    std::unordered_set<uint64_t> mo_descs;            // call sites the core has already serialized
-    kit::c_lst<uint64_t>         mo_open_spans;       // open spans of p8_trc_begin, innermost last
-    uint64_t                     mu_next_span_id = 0; // next free ID of the reserved block
-    uint64_t                     mu_end_span_id  = 0; // first ID after the reserved block
+    kit::c_spin_lock                       mo_lock;
+    std::unordered_map<uint64_t, uint32_t> mo_descs;            // call sites the core has serialized: their numbers
+    kit::c_lst<uint64_t>                   mo_open_spans;       // open spans of p8_trc_begin, innermost last
+    uint64_t                               mu_next_span_id = 0; // next free ID of the reserved block
+    uint64_t                               mu_end_span_id  = 0; // first ID after the reserved block
 };

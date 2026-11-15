@@ -221,18 +221,31 @@ extern "C"
     // Trace & ID to have parent,
     // Logs + trace ID + attributes + more levels
 
-#define P8TRC0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_trace0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
-#define P8DBG0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_debug0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
-#define P8INF0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_info0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
-#define P8WRN0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_warning0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
-#define P8ERR0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_error0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
-#define P8CRT0(ip_module, ip_format_str, ...)                                                                         \
-    p8_log_sent(e_p8_critical0, ip_module, (uint32_t)__LINE__, __FILE__, __FUNCTION__, ##__VA_ARGS__)
+// Log macros: the level, module (NULL for none), trace ID (P8_INVALID_SPAN for none), the attributes count and
+// array (0 and NULL for none), the format string and its arguments; P8LOG adds the caller's line, file and function
+#define P8LOG(ie_level, ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                              \
+    p8_log_sent(ie_level,                                                                                             \
+                ip_module,                                                                                            \
+                iu_trace_id,                                                                                          \
+                (uint32_t)__LINE__,                                                                                   \
+                __FILE__,                                                                                             \
+                __FUNCTION__,                                                                                         \
+                iz_attrs,                                                                                             \
+                ip_attrs,                                                                                             \
+                __VA_ARGS__)
+
+#define P8TRC0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_trace0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
+#define P8DBG0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_debug0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
+#define P8INF0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_info0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
+#define P8WRN0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_warning0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
+#define P8ERR0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_error0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
+#define P8CRT0(ip_module, iu_trace_id, iz_attrs, ip_attrs, ...)                                                       \
+    P8LOG(e_p8_critical0, ip_module, iu_trace_id, iz_attrs, ip_attrs, __VA_ARGS__)
 
     /// @brief set module log verbosity, logs with less priority will be rejected. You may set verbosity online from
     /// Baical server. See documentation for details.

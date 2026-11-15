@@ -1,5 +1,7 @@
 #pragma once
 
+#include "p8_free_ring.hpp"
+
 #include "kit/list.hpp"
 
 #include <array>
@@ -18,6 +20,7 @@ class cp8_memory_budget;
 /// The pool holds a `shared_ptr` to the budget so the budget outlives every
 /// pool that references it — destruction order between pools and the
 /// owning core no longer matters.
+/// Free buffers wait in a lock-free ring; the mutex guards growth and the FIFO queue of waiters.
 class cp8_buffer_pool
 {
 public:
@@ -54,15 +57,17 @@ public:
     void     stat(cp8_buffer_pool::s_stat &or_stat);
     void     unlock();
 
+    // acquire_no_lock() without the caller's lock: the ring is read without the mutex while no thread waits for a
+    // buffer, the mutex is taken to grow the pool or to queue behind a waiter
+    uint8_t *try_acquire();
+
     // Returns a previously-acquired buffer to the free list.
     // Released memory is kept in the pool — it is not given back to the OS.
     void recycle(uint8_t *ip_buf);
 
-    // Batch variant: returns every buffer in io_bufs to the free list under a
-    // single lock acquisition, then empties io_bufs (keeping its node pool).
-    // Equivalent to calling recycle() per element but pays the mutex cost once,
-    // which matters on the worker's flush path where whole batches are recycled.
-    // A recycled buffer is handed directly to the oldest waiter (if any) instead
+    // Batch variant: returns every buffer in io_bufs, then empties io_bufs (keeping its node pool).
+    // While no thread waits for a buffer they go to the ring without the mutex; otherwise, under one lock,
+    // a recycled buffer is handed directly to the oldest waiter (if any) instead
     // of going to the free list, so acquire_wait() acquirers are served FIFO.
     void recycle(kit::c_lst<uint8_t *> &io_bufs);
 
@@ -96,11 +101,38 @@ private:
     // (caller pushes ip_buf to mo_free). Holds mo_mutex.
     int try_handoff_no_lock(uint8_t *ip_buf);
 
+    // a new buffer when the budget allows it; holds mo_mutex
+    uint8_t *grow_no_lock();
+
+    // puts ip_buf into the ring, waiting while a pop finishes the cell; false only when every cell holds a buffer
+    bool push_free(uint8_t *ip_buf);
+
+    // puts ip_buf into the ring, or into mo_spill when the ring is full; put_free_no_lock holds mo_mutex
+    void put_free(uint8_t *ip_buf);
+    void put_free_no_lock(uint8_t *ip_buf);
+
+    // pops a buffer, waiting while a push finishes the head cell: empty only when no buffer is on its way, as a pop
+    // under the mutex would see it
+    bool pop_free(uint8_t *&op_buf);
+
+    // a buffer from mo_spill; holds mo_mutex
+    bool pop_spill_no_lock(uint8_t *&op_buf);
+
+    // hands the free buffers to the queued waiters, oldest first; holds mo_mutex
+    void serve_waiters_no_lock();
+
     size_t                             mz_buffer_size;
     std::shared_ptr<cp8_memory_budget> mp_budget;
-    kit::c_lst<uint8_t *>              mo_free;
-    kit::c_lst<uint8_t *>              mo_all;
+    cp8_free_ring                      mo_free;  // free buffers: writers pop, the worker pushes
+    kit::c_lst<uint8_t *>              mo_spill; // free buffers beyond the ring cells, only in a pool without a budget
+    kit::c_lst<uint8_t *>              mo_all;   // every buffer, for the destructor
+    std::atomic<size_t>                mu_spill_count { 0 };
+    std::atomic<size_t>                mu_all_count { 0 };
     std::mutex                         mo_mutex;
+
+    // threads in acquire_wait() that found no buffer and may park; while it is 0, recycle() and try_acquire() use
+    // the ring without the mutex
+    alignas(128) std::atomic<uint32_t> mu_slow { 0 };
 
     // FIFO waiter queue for acquire_wait(). Every field is mutated only under mo_mutex.
     // mu_wait_count is loaded relaxed on the recycle path to skip the queue when empty.

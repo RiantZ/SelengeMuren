@@ -456,6 +456,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
         lp_buf_hdr->mu_writer_id      = mu_writer_id;
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
+        lp_buf_hdr->mu_base_ts        = get_ticks();
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -477,15 +478,14 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             lu_flags |= P8_LOG_FLAG_ATTRS;
         }
 
-        lp_hdr               = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
-        lp_hdr->mu_hash      = lp_desc->mu_hash;
-        lp_hdr->mu_timestamp = get_ticks();
-        lp_hdr->mu_thread_id = mu_thread_id;
-        lp_hdr->mu_level     = static_cast<uint8_t>(ie_level);
-        lp_hdr->mu_flags     = lu_flags;
+        lp_hdr                = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
+        lp_hdr->mu_desc_index = lp_desc->mu_index;
+        lp_hdr->mi_ts_delta   = get_ts_delta();
+        lp_hdr->mu_level      = static_cast<uint8_t>(ie_level);
+        lp_hdr->mu_flags      = lu_flags;
 
         // the optional fields in flag order; no CPU core ID yet (P8_LOG_FLAG_PROCESSOR)
-        lp_dst               = lp_base + sizeof(struct s_p8_log_item_dat);
+        lp_dst                = lp_base + sizeof(struct s_p8_log_item_dat);
         if(0 != (lu_flags & P8_LOG_FLAG_TRACE_ID))
         {
             memcpy(lp_dst, &iu_trace_id, sizeof(iu_trace_id));
@@ -588,15 +588,12 @@ bool cp8_log::send(enum e_p8_level             ie_level,
             }
             default:
             {
-#if defined(GTX32)
-                if(4 == lp_arg->mu_size)
+                if(sizeof(uint32_t) == lp_arg->mu_size)
                 {
                     unsigned int lu_val = va_arg(io_args, unsigned int);
                     P8_WRITE_PIECE(lp_dst, lp_buf_end, &lu_val, sizeof(lu_val), lz_args_written);
                 }
-                else
-#endif
-                    if(sizeof(uint64_t) == lp_arg->mu_size)
+                else if(sizeof(uint64_t) == lp_arg->mu_size)
                 {
                     if(P8_LOG_ARG_TYPE_DOUBLE != lp_arg->mu_type) [[likely]]
                     {
@@ -636,11 +633,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lu_attrs_count   = lo_attrs.mu_count;
     }
 
-    // Pad the record to 8 bytes so the next one starts 8-aligned: with no gaps the write offset is congruent to the
+    // Pad the record to 4 bytes so the next one starts 4-aligned: with no gaps the write offset is congruent to the
     // record size. Pad bytes stay as-is (consumers skip them via mu_size); a run of zeros would weaken encryption.
     {
         size_t lz_size   = sizeof(s_p8_log_item_dat) + lz_opt + lz_args_written + lz_attrs_written;
-        size_t lz_pad    = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
+        size_t lz_pad    = ((lz_size + static_cast<size_t>(3u)) & ~static_cast<size_t>(3u)) - lz_size;
         lp_hdr->mu_size  = static_cast<uint16_t>(lz_size + lz_pad);
         lp_dst          += lz_pad;
         if(lp_attrs_head)

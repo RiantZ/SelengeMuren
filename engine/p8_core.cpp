@@ -1085,14 +1085,12 @@ uint8_t *cp8_core::acquire_buffer(bool ib_wait)
     }
 #endif
 
-    // Fast path shared by both modes: take a buffer (grow-on-demand fires inside
-    // acquire_no_lock) and sample pressure under a single lock.
-    mp_data_pool->lock();
+    // Fast path shared by both modes: a buffer from the ring without the pool mutex, which the pool takes only to
+    // grow or to queue behind a waiter; then the pressure sample
     cp8_buffer_pool::s_stat ls_stat = {};
-    uint8_t                *lp_buf  = mp_data_pool->acquire_no_lock();
+    uint8_t                *lp_buf  = mp_data_pool->try_acquire();
 
     mp_data_pool->stat(ls_stat);
-    mp_data_pool->unlock();
 
     if(lp_buf)
     {
@@ -1479,6 +1477,7 @@ bool cp8_core::serialize_log_desc(const struct s_p8_log_desc *ip_desc, std::uniq
     lp_entry->ms_hdr.mu_size        = static_cast<uint16_t>(lz_padded);
     lp_entry->mu_line               = ip_desc->mu_line;
     lp_entry->mu_hash               = ip_desc->mu_hash;
+    lp_entry->mu_index              = ip_desc->mu_index;
     lp_entry->mu_format_len         = static_cast<uint16_t>(lz_fmt);
     lp_entry->mu_file_len           = static_cast<uint16_t>(lz_file);
     lp_entry->mu_function_len       = static_cast<uint16_t>(lz_func);
@@ -1645,6 +1644,7 @@ bool cp8_core::serialize_str(uint8_t                       iu_svc_type,
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 bool cp8_core::serialize_trc_desc(uint64_t                      iu_hash,
+                                  uint32_t                      iu_index,
                                   uint32_t                      iu_line,
                                   uint64_t                      iu_file_hash,
                                   uint64_t                      iu_func_hash,
@@ -1666,6 +1666,7 @@ bool cp8_core::serialize_trc_desc(uint64_t                      iu_hash,
     lp_entry->mu_file_hash          = iu_file_hash;
     lp_entry->mu_func_hash          = iu_func_hash;
     lp_entry->mu_name_hash          = iu_name_hash;
+    lp_entry->mu_index              = iu_index;
 
     return true;
 }
@@ -1697,6 +1698,7 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
     }
 
     lp_desc->mu_hash            = iu_hash;
+    lp_desc->mu_index           = mu_next_log_index;
     lp_desc->mp_format          = ip_format;
     lp_desc->mp_file            = ip_file;
     lp_desc->mp_function        = ip_function;
@@ -1733,8 +1735,9 @@ struct s_p8_log_desc *cp8_core::resolve_log_desc(uint64_t    iu_hash,
 
     // known only once its entry is written, so no record goes out before its descriptor
     mo_log_descs[iu_hash] = lp_desc;
-    lp_result             = lp_desc;
-    lp_desc               = nullptr;
+    ++mu_next_log_index;
+    lp_result = lp_desc;
+    lp_desc   = nullptr;
 
 lbl_exit:
     if(lp_desc)
@@ -1750,7 +1753,8 @@ bool cp8_core::resolve_trc_desc(uint64_t    iu_hash,
                                 const char *ip_file,
                                 uint32_t    iu_line,
                                 const char *ip_function,
-                                const char *ip_name)
+                                const char *ip_name,
+                                uint32_t   &ou_index)
 {
     uint64_t lu_file_hash = 0;
     uint64_t lu_func_hash = 0;
@@ -1760,8 +1764,9 @@ bool cp8_core::resolve_trc_desc(uint64_t    iu_hash,
     // held while the entries wait for a service buffer, so no thread sends a site or a string twice
     std::lock_guard<std::mutex> lo_lock(mo_trc_desc_mutex);
 
-    if(mo_trc_descs.count(iu_hash))
+    if(auto lo_it = mo_trc_descs.find(iu_hash); lo_it != mo_trc_descs.end())
     {
+        ou_index  = lo_it->second;
         lb_result = true;
         goto lbl_exit;
     }
@@ -1772,7 +1777,13 @@ bool cp8_core::resolve_trc_desc(uint64_t    iu_hash,
         if(!serialize_str(P8_SVC_TYPE_FILE_NAME, ip_file, mo_file_names, lu_file_hash, lo_svc_lock)
            || !serialize_str(P8_SVC_TYPE_FUNC_NAME, ip_function, mo_func_names, lu_func_hash, lo_svc_lock)
            || !serialize_str(P8_SVC_TYPE_SPAN_NAME, ip_name, mo_span_names, lu_name_hash, lo_svc_lock)
-           || !serialize_trc_desc(iu_hash, iu_line, lu_file_hash, lu_func_hash, lu_name_hash, lo_svc_lock))
+           || !serialize_trc_desc(iu_hash,
+                                  mu_next_trc_index,
+                                  iu_line,
+                                  lu_file_hash,
+                                  lu_func_hash,
+                                  lu_name_hash,
+                                  lo_svc_lock))
         {
             std::fprintf(stderr,
                          "cp8_core::resolve_trc_desc: no service buffer for span descriptor %llx\n",
@@ -1782,7 +1793,8 @@ bool cp8_core::resolve_trc_desc(uint64_t    iu_hash,
     }
 
     // known only once its entries are written, so no span goes out before its descriptor
-    mo_trc_descs.insert(iu_hash);
+    ou_index = mu_next_trc_index++;
+    mo_trc_descs.emplace(iu_hash, ou_index);
     lb_result = true;
 
 lbl_exit:

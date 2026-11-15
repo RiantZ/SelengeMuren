@@ -39,6 +39,13 @@ protected:
         return kit::get_hires_ticks();
     }
 
+    // stamp of a record as a delta to the base time of the buffer that holds its header; negative if the clock steps
+    // back
+    int32_t get_ts_delta() const
+    {
+        return static_cast<int32_t>(get_ticks() - reinterpret_cast<const s_p8_data_buf_hdr *>(mp_buffer)->mu_base_ts);
+    }
+
     // Attributes of a record in one pass, iz_record bytes into it: the record stays within P8_MAX_RECORD_SIZE (a
     // string is cut on a UTF-8 boundary, a value without room is skipped) and holds at most 255 attributes; one that
     // does not fit the buffer continues in the next buffers byte by byte

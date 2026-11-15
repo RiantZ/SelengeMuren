@@ -134,6 +134,7 @@ bool cp8_trc::ensure_buffer(std::unique_lock<kit::c_spin_lock> &io_guard, size_t
         lp_buf_hdr->mu_thread_id      = mu_thread_id;
         lp_buf_hdr->mu_writer_id      = mu_writer_id;
         lp_buf_hdr->mu_buf_seq        = mu_buf_seq++;
+        lp_buf_hdr->mu_base_ts        = get_ticks();
 
         mz_buf_used                   = sizeof(s_p8_data_buf_hdr);
     }
@@ -153,6 +154,7 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
 {
     const char         *lp_file        = ip_file ? ip_file : "";
     uint64_t            lu_hash        = 0;
+    uint32_t            lu_desc_index  = 0;
     uint64_t            lu_span_id     = 0;
     s_p8_trc_begin_dat *lp_hdr         = nullptr;
     uint8_t            *lp_dst         = nullptr;
@@ -167,15 +169,19 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
 
     // the descriptor key is the file + line hash, as in logs
     lu_hash = P8_GET_LOG_HASH(lp_file, iu_line);
-    if(mo_descs.find(lu_hash) == mo_descs.end()) [[unlikely]]
+    if(auto lo_it = mo_descs.find(lu_hash); lo_it != mo_descs.end()) [[likely]]
+    {
+        lu_desc_index = lo_it->second;
+    }
+    else
     {
         // the core may wait here for a service buffer, so no span goes out before its descriptor
-        if(!mp_core->resolve_trc_desc(lu_hash, lp_file, iu_line, ip_function, ip_name))
+        if(!mp_core->resolve_trc_desc(lu_hash, lp_file, iu_line, ip_function, ip_name, lu_desc_index))
         {
             mu_dropped_traces.fetch_add(1, std::memory_order_relaxed);
             return P8_INVALID_SPAN;
         }
-        mo_descs.insert(lu_hash);
+        mo_descs.emplace(lu_hash, lu_desc_index);
     }
 
     if(mu_next_span_id == mu_end_span_id) [[unlikely]]
@@ -201,14 +207,13 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
     lz_frag_commit         = mo_fragments.size();
 
     lp_hdr                 = reinterpret_cast<s_p8_trc_begin_dat *>(mp_buffer + mz_buf_used);
-    lp_hdr->mu_timestamp   = get_ticks();
+    lp_hdr->mi_ts_delta    = get_ts_delta();
     lp_hdr->mu_span_id     = lu_span_id;
     lp_hdr->mu_size        = static_cast<uint16_t>(sizeof(s_p8_trc_begin_dat));
     lp_hdr->mu_type        = iu_type;
     lp_hdr->mu_attrs_count = 0;
-    lp_hdr->mu_thread_id   = mu_thread_id;
-    lp_hdr->mu_hash        = lu_hash;
     lp_hdr->mu_parent_id   = iu_parent_id;
+    lp_hdr->mu_desc_index  = lu_desc_index;
 
     lp_dst                 = mp_buffer + mz_buf_used + sizeof(s_p8_trc_begin_dat);
     lp_buf_end             = mp_buffer + mz_buf_max;
@@ -223,11 +228,11 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
         }
     }
 
-    // without gaps the write offset stays congruent to the record size, so padding the size to 8 also starts
-    // the next record 8-aligned in its buffer, and the pad never crosses the buffer end
+    // without gaps the write offset stays congruent to the record size, so padding the size to 4 also starts
+    // the next record 4-aligned in its buffer, and the pad never crosses the buffer end
     {
         size_t lz_size          = sizeof(s_p8_trc_begin_dat) + lo_attrs.mz_bytes;
-        size_t lz_pad           = ((lz_size + 7u) & ~static_cast<size_t>(7u)) - lz_size;
+        size_t lz_pad           = ((lz_size + 3u) & ~static_cast<size_t>(3u)) - lz_size;
         lp_dst                 += lz_pad;
         lp_hdr->mu_attrs_count  = lo_attrs.mu_count;
         lp_hdr->mu_size         = static_cast<uint16_t>(lz_size + lz_pad);
@@ -281,12 +286,11 @@ void cp8_trc::write_end(uint64_t iu_span_id)
     }
 
     s_p8_trc_end_dat *lp_rec  = reinterpret_cast<s_p8_trc_end_dat *>(mp_buffer + mz_buf_used);
-    lp_rec->mu_timestamp      = get_ticks();
+    lp_rec->mi_ts_delta       = get_ts_delta();
     lp_rec->mu_span_id        = iu_span_id;
     lp_rec->mu_size           = static_cast<uint16_t>(sizeof(s_p8_trc_end_dat));
     lp_rec->mu_type           = P8_TRC_ITEM_END;
     lp_rec->mu_padding        = 0;
-    lp_rec->mu_thread_id      = mu_thread_id;
 
     mz_buf_used              += sizeof(s_p8_trc_end_dat);
     reinterpret_cast<s_p8_data_buf_hdr *>(mp_buffer)->mu_size = static_cast<uint16_t>(mz_buf_used);

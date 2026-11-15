@@ -43,17 +43,18 @@ size_t frag_string_len(size_t iz_buf_sz)
 // helpers: reassemble captured buffers into a linear payload
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Each log item is padded so its total size (mu_size) lands on an 8-byte
+// Each log item is padded so its total size (mu_size) lands on a 4-byte
 // boundary; mirror that rounding when computing expected wire sizes.
 static uint32_t expected_item_size(size_t iz_unpadded)
 {
-    return static_cast<uint16_t>((iz_unpadded + 7u) & ~static_cast<size_t>(7u));
+    return static_cast<uint16_t>((iz_unpadded + 3u) & ~static_cast<size_t>(3u));
 }
 
 // a record as a reader sees it: the wire header and the optional fields its flags announce
 struct s_log_item
 {
-    uint64_t mu_hash        = 0;
+    uint32_t mu_desc_index  = 0;
+    uint64_t mu_hash        = 0; // of the descriptor the record's number points to, 0 when it was not sent
     uint64_t mu_timestamp   = 0;
     uint32_t mu_thread_id   = 0;
     uint16_t mu_size        = 0;
@@ -68,8 +69,44 @@ struct s_log_item
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// false when the header or its optional fields do not fit the iz_avail bytes at ip_rec
-static bool read_item_head(const uint8_t *ip_rec, size_t iz_avail, s_log_item &or_item)
+// hash of the log descriptor with number iu_index in the service buffers; 0 when no such descriptor was sent
+static uint64_t get_log_desc_hash(uint32_t iu_index)
+{
+    for(const auto &lr_buf : p8_test_get_service_buffers())
+    {
+        size_t lz_off = 0;
+        while(lz_off + sizeof(s_p8_svc_hdr) <= lr_buf.size())
+        {
+            s_p8_svc_hdr lo_hdr = {};
+            memcpy(&lo_hdr, lr_buf.data() + lz_off, sizeof(lo_hdr));
+            if(lo_hdr.mu_size < sizeof(s_p8_svc_hdr) || lz_off + lo_hdr.mu_size > lr_buf.size())
+            {
+                break;
+            }
+
+            if(P8_SVC_TYPE_LOG_DESC == lo_hdr.mu_svc_type && lo_hdr.mu_size >= sizeof(s_p8_log_item_svc))
+            {
+                s_p8_log_item_svc lo_desc = {};
+                memcpy(&lo_desc, lr_buf.data() + lz_off, sizeof(lo_desc));
+                if(lo_desc.mu_index == iu_index)
+                {
+                    return lo_desc.mu_hash;
+                }
+            }
+            lz_off += lo_hdr.mu_size;
+        }
+    }
+
+    return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// false when the header or its optional fields do not fit the iz_avail bytes at ip_rec; ir_buf is the header of the
+// buffer the record starts in, it gives the record its time base and thread
+static bool read_item_head(const s_p8_data_buf_hdr &ir_buf,
+                           const uint8_t           *ip_rec,
+                           size_t                   iz_avail,
+                           s_log_item              &or_item)
 {
     s_p8_log_item_dat lo_hdr  = {};
     size_t            lz_off  = sizeof(lo_hdr);
@@ -90,12 +127,13 @@ static bool read_item_head(const uint8_t *ip_rec, size_t iz_avail, s_log_item &o
         return false;
     }
     memcpy(&lo_hdr, ip_rec, sizeof(lo_hdr));
-    or_item.mu_hash      = lo_hdr.mu_hash;
-    or_item.mu_timestamp = lo_hdr.mu_timestamp;
-    or_item.mu_thread_id = lo_hdr.mu_thread_id;
-    or_item.mu_size      = lo_hdr.mu_size;
-    or_item.mu_level     = lo_hdr.mu_level;
-    or_item.mu_flags     = lo_hdr.mu_flags;
+    or_item.mu_desc_index = lo_hdr.mu_desc_index;
+    or_item.mu_hash       = get_log_desc_hash(lo_hdr.mu_desc_index);
+    or_item.mu_timestamp  = ir_buf.mu_base_ts + static_cast<int64_t>(lo_hdr.mi_ts_delta);
+    or_item.mu_thread_id  = ir_buf.mu_thread_id;
+    or_item.mu_size       = lo_hdr.mu_size;
+    or_item.mu_level      = lo_hdr.mu_level;
+    or_item.mu_flags      = lo_hdr.mu_flags;
 
     if((0 != (lo_hdr.mu_flags & P8_LOG_FLAG_TRACE_ID)) && !ll_take(&or_item.mu_trace_id, sizeof(uint64_t)))
     {
@@ -152,7 +190,10 @@ static s_log_content_parsed parse_captured_buffers()
 
     size_t lz_item_off = sizeof(s_p8_data_buf_hdr);
     if((lo_first.size() < lz_item_off)
-       || !read_item_head(lo_first.data() + lz_item_off, lo_first.size() - lz_item_off, lo_result.mo_item_hdr))
+       || !read_item_head(lo_result.mo_buf_hdr,
+                          lo_first.data() + lz_item_off,
+                          lo_first.size() - lz_item_off,
+                          lo_result.mo_item_hdr))
     {
         return lo_result;
     }
@@ -250,6 +291,8 @@ static std::vector<s_parsed_item> parse_all_items()
     }
 
     std::vector<uint8_t> lo_stream;
+    // where each buffer's data starts in lo_stream, with the buffer header
+    std::vector<std::pair<size_t, s_p8_data_buf_hdr>> lo_starts;
     for(const auto &lo_buf : lo_bufs)
     {
         s_p8_data_buf_hdr lo_hdr = {};
@@ -266,15 +309,25 @@ static std::vector<s_parsed_item> parse_all_items()
         size_t lz_start = sizeof(s_p8_data_buf_hdr);
         if(lz_used > lz_start)
         {
+            lo_starts.emplace_back(lo_stream.size(), lo_hdr);
             lo_stream.insert(lo_stream.end(), lo_buf.data() + lz_start, lo_buf.data() + lz_used);
         }
     }
 
-    size_t lz_pos = 0;
+    size_t            lz_pos     = 0;
+    size_t            lz_next    = 0;
+    s_p8_data_buf_hdr lo_cur_hdr = {};
     while(lz_pos + sizeof(s_p8_log_item_dat) <= lo_stream.size())
     {
+        // the header of the buffer this record starts in
+        while((lz_next < lo_starts.size()) && (lo_starts[lz_next].first <= lz_pos))
+        {
+            lo_cur_hdr = lo_starts[lz_next].second;
+            ++lz_next;
+        }
+
         s_parsed_item lo_item = {};
-        if(!read_item_head(lo_stream.data() + lz_pos, lo_stream.size() - lz_pos, lo_item.mo_hdr)
+        if(!read_item_head(lo_cur_hdr, lo_stream.data() + lz_pos, lo_stream.size() - lz_pos, lo_item.mo_hdr)
            || (lo_item.mo_hdr.mu_size < lo_item.mo_hdr.mz_head))
         {
             break;
@@ -334,7 +387,7 @@ static std::vector<s_placed_item> parse_placed_items()
             {
                 // a record header and its optional fields are never split
                 s_placed_item lo_item = {};
-                if(!read_item_head(lr_buf.data() + lz_off, lz_end - lz_off, lo_item.mo_hdr)
+                if(!read_item_head(lo_hdr, lr_buf.data() + lz_off, lz_end - lz_off, lo_item.mo_hdr)
                    || (lo_item.mo_hdr.mu_size < lo_item.mo_hdr.mz_head))
                 {
                     return lo_items;
@@ -716,7 +769,7 @@ TEST_F(c_log_content_test, item_hdr_args_size_single_int)
     auto lo_parsed = parse_captured_buffers();
     // without attributes the record has no args size: the one arg fills it up to the padding
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint64_t)));
+              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
@@ -742,7 +795,7 @@ TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
     auto lo_parsed = parse_captured_buffers();
 
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint64_t)));
+              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, item_hdr_attrs_count_zero)
@@ -1730,7 +1783,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
     }
 }
 
-TEST_F(c_log_content_test, item_size_8_byte_aligned)
+TEST_F(c_log_content_test, item_size_4_byte_aligned)
 {
     std::thread lo_thread(
         []()
@@ -1776,7 +1829,7 @@ TEST_F(c_log_content_test, item_size_8_byte_aligned)
 
     for(const auto &lo_item : lo_items)
     {
-        EXPECT_EQ(lo_item.mo_hdr.mu_size % 8u, 0u) << "item size must be 8-byte aligned";
+        EXPECT_EQ(lo_item.mo_hdr.mu_size % 4u, 0u) << "item size must be 4-byte aligned";
         EXPECT_EQ(lo_item.mo_payload.size(), lo_item.mo_hdr.mu_size - lo_item.mo_hdr.mz_head);
     }
 }
@@ -2044,8 +2097,8 @@ TEST_F(c_log_content_test, verbosity_default_gates_null_module)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // A piece that does not fit at the buffer end continues in the next buffer, so no buffer ends with a gap and the
-// next record stays 8-aligned.
-TEST_F(c_log_content_test, split_piece_keeps_next_record_8_aligned)
+// next record stays 4-aligned.
+TEST_F(c_log_content_test, split_piece_keeps_next_record_4_aligned)
 {
     const size_t lz_buf_sz = p8_test_get_buffer_size();
     // bytes before the first string body: buffer header, record header, string length
@@ -2134,7 +2187,7 @@ TEST_F(c_log_content_test, split_piece_keeps_next_record_8_aligned)
 
             for(const auto &lr_item : lo_items)
             {
-                EXPECT_EQ(lr_item.mz_off % 8u, 0u) << "record in buffer " << lr_item.mz_buf << " is not 8-aligned";
+                EXPECT_EQ(lr_item.mz_off % 4u, 0u) << "record in buffer " << lr_item.mz_buf << " is not 4-aligned";
             }
 
             for(const auto &lr_buf : p8_test_get_captured_buffers())
@@ -2505,7 +2558,7 @@ TEST_F(c_log_content_test, record_without_optional_fields_is_its_header_and_args
     ASSERT_EQ(lo_items.size(), 1u);
     EXPECT_EQ(lo_items[0].mo_hdr.mu_flags, 0u);
     EXPECT_EQ(lo_items[0].mo_hdr.mz_head, sizeof(s_p8_log_item_dat));
-    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, sizeof(s_p8_log_item_dat) + P8_SIZE_OF_ARG(uint32_t));
+    EXPECT_EQ(lo_items[0].mo_hdr.mu_size, expected_item_size(sizeof(s_p8_log_item_dat) + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, trace_id_follows_the_header)
