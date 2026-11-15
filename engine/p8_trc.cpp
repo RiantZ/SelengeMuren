@@ -214,7 +214,6 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
     lp_hdr->mu_attrs_count = 0;
     lp_hdr->mu_parent_id   = iu_parent_id;
     lp_hdr->mu_desc_index  = lu_desc_index;
-    lp_hdr->mu_padding     = 0;
 
     lp_dst                 = mp_buffer + mz_buf_used + sizeof(s_p8_trc_begin_dat);
     lp_buf_end             = mp_buffer + mz_buf_max;
@@ -229,11 +228,11 @@ uint64_t cp8_trc::write_begin(uint8_t                     iu_type,
         }
     }
 
-    // without gaps the write offset stays congruent to the record size, so padding the size to 8 also starts
-    // the next record 8-aligned in its buffer, and the pad never crosses the buffer end
+    // without gaps the write offset stays congruent to the record size, so padding the size to 4 also starts
+    // the next record 4-aligned in its buffer, and the pad never crosses the buffer end
     {
         size_t lz_size          = sizeof(s_p8_trc_begin_dat) + lo_attrs.mz_bytes;
-        size_t lz_pad           = ((lz_size + 7u) & ~static_cast<size_t>(7u)) - lz_size;
+        size_t lz_pad           = ((lz_size + 3u) & ~static_cast<size_t>(3u)) - lz_size;
         lp_dst                 += lz_pad;
         lp_hdr->mu_attrs_count  = lo_attrs.mu_count;
         lp_hdr->mu_size         = static_cast<uint16_t>(lz_size + lz_pad);

@@ -239,7 +239,7 @@ extern "C"
         //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...;
         //* without P8_LOG_FLAG_ATTRS they fill the record up to the padding, read them by the descriptor's arg types
         //* Serialized attributes [p8_attr_id + data][...]
-        //* padding to tail of the buffer to 8 bytes boundary, to be sure that following buffer will start from 8b
+        //* padding to tail of the buffer to 4 bytes boundary, to be sure that following buffer will start from 4b
         // alignement
     };
 
@@ -261,10 +261,11 @@ extern "C"
     };
 
     // Span ID, time delta, size and type sit at the same offsets in every trace record; the thread is in the buffer
-    // header
+    // header. Records are packed to 4 bytes: they sit 4-aligned in a buffer, their 64-bit fields too
 
+    PRAGMA_PACK_ENTER(4)
     // Start of a span: P8_TRC_ITEM_BEGIN or P8_TRC_ITEM_BEGIN_ASYNC
-    struct s_p8_trc_begin_dat
+    struct ATTR_PACK(4) s_p8_trc_begin_dat
     {
         uint64_t mu_span_id;     // span ID, unique in the process
         int32_t  mi_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
@@ -273,13 +274,12 @@ extern "C"
         uint8_t  mu_attrs_count; // number of serialized attributes
         uint64_t mu_parent_id;   // parent span ID; 0 - a new trace
         uint32_t mu_desc_index;  // span descriptor number: s_p8_trc_item_svc::mu_index
-        uint32_t mu_padding;     // alignment, 0
         //* Serialized attributes [p8_attr_id + data][...]
-        //* padding to tail to 8 bytes boundary
+        //* padding to tail to 4 bytes boundary
     };
 
     // End of a span started by either begin
-    struct s_p8_trc_end_dat
+    struct ATTR_PACK(4) s_p8_trc_end_dat
     {
         uint64_t mu_span_id;  // span ID returned by p8_trc_begin / p8_trc_begin_async
         int32_t  mi_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
@@ -287,6 +287,7 @@ extern "C"
         uint8_t  mu_type;     // P8_TRC_ITEM_END
         uint8_t  mu_padding;  // alignment, 0
     };
+    PRAGMA_PACK_EXIT()
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // METRICS
@@ -316,7 +317,9 @@ extern "C"
     // Per-occurrence metric sample emitted into a P8_PACKET_METRICS buffer. References
     // its immutable descriptor (s_p8_mtk_svc) by mi_id and carries the runtime value
     // and timestamp.
-    struct s_p8_mtk_item_dat
+    // packed to 4 bytes, as trace records
+    PRAGMA_PACK_ENTER(4)
+    struct ATTR_PACK(4) s_p8_mtk_item_dat
     {
         double   md_value;       // sample value
         int32_t  mi_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
@@ -324,10 +327,10 @@ extern "C"
         uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
         uint8_t  mu_flags;       // todo
         uint8_t  mu_attrs_count; // number of serialized attributes (0 in v1)
-        uint32_t mu_padding;     // alignment, 0
         //* Serialized attributes [p8_attr_id + data][...] (none in v1)
-        //* padding to tail to 8 bytes boundary
+        //* padding to tail to 4 bytes boundary
     };
+    PRAGMA_PACK_EXIT()
 
 #ifdef __cplusplus
 }

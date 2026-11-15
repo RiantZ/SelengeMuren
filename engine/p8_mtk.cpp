@@ -36,8 +36,8 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
 
     // buffer availability — reuse the current buffer while it can still hold a full
     // item; otherwise park it (drained later by the worker via pull()). Every item
-    // is a multiple of 8 bytes and so is the buffer header, so mz_buf_used stays
-    // 8-aligned without any per-item padding.
+    // is a multiple of 4 bytes and so is the buffer header, so mz_buf_used stays
+    // 4-aligned without any per-item padding.
     if(mp_buffer) [[likely]]
     {
         if((mz_buf_max - mz_buf_used) < sizeof(s_p8_mtk_item_dat)) [[unlikely]]
@@ -85,7 +85,6 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
         lp_hdr->mu_size            = static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat));
         lp_hdr->mu_flags           = 0;
         lp_hdr->mu_attrs_count     = 0;
-        lp_hdr->mu_padding         = 0;
 
         mz_buf_used               += sizeof(s_p8_mtk_item_dat);
     }

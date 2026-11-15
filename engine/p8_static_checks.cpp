@@ -28,12 +28,16 @@ static_assert(sizeof(struct s_p8_hdr) % 8 == 0, "s_p8_hdr size must be a multipl
 static_assert(sizeof(struct s_p8_data_buf_hdr) % 8 == 0, "s_p8_data_buf_hdr size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_batch) % 8 == 0, "s_p8_batch size must be a multiple of 8 bytes");
 static_assert(sizeof(struct s_p8_mtk_svc) % 8 == 0, "s_p8_mtk_svc size must be a multiple of 8 bytes");
-static_assert(sizeof(struct s_p8_mtk_item_dat) % 8 == 0, "s_p8_mtk_item_dat size must be a multiple of 8 bytes");
 
 static_assert(alignof(struct s_p8_hdr) >= 8, "s_p8_hdr must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_batch) >= 8, "s_p8_batch must have at least 8-byte alignment");
 static_assert(alignof(struct s_p8_mtk_svc) >= 8, "s_p8_mtk_svc must have at least 8-byte alignment");
-static_assert(alignof(struct s_p8_mtk_item_dat) >= 8, "s_p8_mtk_item_dat must have at least 8-byte alignment");
+
+// data records are the exception: they sit 4-aligned in a buffer, so their structs are 4-aligned too
+static_assert(alignof(struct s_p8_log_item_dat) == 4, "s_p8_log_item_dat must be 4-byte aligned");
+static_assert(alignof(struct s_p8_trc_begin_dat) == 4, "s_p8_trc_begin_dat must be 4-byte aligned");
+static_assert(alignof(struct s_p8_trc_end_dat) == 4, "s_p8_trc_end_dat must be 4-byte aligned");
+static_assert(alignof(struct s_p8_mtk_item_dat) == 4, "s_p8_mtk_item_dat must be 4-byte aligned");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Wire-format layout contract.  These structures are written to / read from shared memory and transmitted over the
@@ -111,7 +115,7 @@ static_assert(offsetof(struct s_p8_log_item_svc, mu_function_len) == 24,
 static_assert(offsetof(struct s_p8_log_item_svc, mu_args_count) == 26,
               "s_p8_log_item_svc::mu_args_count offset changed");
 
-// s_p8_log_item_dat: no 64-bit field, 4-byte aligned; the record padding still starts the next record 8-aligned
+// s_p8_log_item_dat
 static_assert(sizeof(struct s_p8_log_item_dat) == 12, "s_p8_log_item_dat wire size changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_desc_index) == 0,
               "s_p8_log_item_dat::mu_desc_index offset changed");
@@ -139,7 +143,7 @@ static_assert(offsetof(struct s_p8_trc_item_svc, mu_index) == 40, "s_p8_trc_item
 static_assert(offsetof(struct s_p8_trc_item_svc, mu_padding) == 44, "s_p8_trc_item_svc::mu_padding offset changed");
 
 // trace records: span ID, time delta, size and type at the same offsets in every record
-static_assert(sizeof(struct s_p8_trc_begin_dat) == 32, "s_p8_trc_begin_dat wire size changed");
+static_assert(sizeof(struct s_p8_trc_begin_dat) == 28, "s_p8_trc_begin_dat wire size changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_span_id) == 0, "s_p8_trc_begin_dat::mu_span_id offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mi_ts_delta) == 8, "s_p8_trc_begin_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_size) == 12, "s_p8_trc_begin_dat::mu_size offset changed");
@@ -150,7 +154,6 @@ static_assert(offsetof(struct s_p8_trc_begin_dat, mu_parent_id) == 16,
               "s_p8_trc_begin_dat::mu_parent_id offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_desc_index) == 24,
               "s_p8_trc_begin_dat::mu_desc_index offset changed");
-static_assert(offsetof(struct s_p8_trc_begin_dat, mu_padding) == 28, "s_p8_trc_begin_dat::mu_padding offset changed");
 
 static_assert(sizeof(struct s_p8_trc_end_dat) == 16, "s_p8_trc_end_dat wire size changed");
 static_assert(offsetof(struct s_p8_trc_end_dat, mu_span_id) == 0, "s_p8_trc_end_dat::mu_span_id offset changed");
@@ -172,7 +175,7 @@ static_assert(offsetof(struct s_p8_mtk_svc, mu_desc_len) == 28, "s_p8_mtk_svc::m
 static_assert(offsetof(struct s_p8_mtk_svc, mu_unit_len) == 30, "s_p8_mtk_svc::mu_unit_len offset changed");
 
 // s_p8_mtk_item_dat
-static_assert(sizeof(struct s_p8_mtk_item_dat) == 24, "s_p8_mtk_item_dat wire size changed");
+static_assert(sizeof(struct s_p8_mtk_item_dat) == 20, "s_p8_mtk_item_dat wire size changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, md_value) == 0, "s_p8_mtk_item_dat::md_value offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mi_ts_delta) == 8, "s_p8_mtk_item_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mi_id) == 12, "s_p8_mtk_item_dat::mi_id offset changed");
@@ -180,7 +183,6 @@ static_assert(offsetof(struct s_p8_mtk_item_dat, mu_size) == 16, "s_p8_mtk_item_
 static_assert(offsetof(struct s_p8_mtk_item_dat, mu_flags) == 18, "s_p8_mtk_item_dat::mu_flags offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mu_attrs_count) == 19,
               "s_p8_mtk_item_dat::mu_attrs_count offset changed");
-static_assert(offsetof(struct s_p8_mtk_item_dat, mu_padding) == 20, "s_p8_mtk_item_dat::mu_padding offset changed");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Attribute value type contract.  The public enum e_p8_attr_type (p8_client_api.h) is the source of truth the caller

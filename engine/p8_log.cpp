@@ -633,11 +633,11 @@ bool cp8_log::send(enum e_p8_level             ie_level,
         lu_attrs_count   = lo_attrs.mu_count;
     }
 
-    // Pad the record to 8 bytes so the next one starts 8-aligned: with no gaps the write offset is congruent to the
+    // Pad the record to 4 bytes so the next one starts 4-aligned: with no gaps the write offset is congruent to the
     // record size. Pad bytes stay as-is (consumers skip them via mu_size); a run of zeros would weaken encryption.
     {
         size_t lz_size   = sizeof(s_p8_log_item_dat) + lz_opt + lz_args_written + lz_attrs_written;
-        size_t lz_pad    = ((lz_size + static_cast<size_t>(7u)) & ~static_cast<size_t>(7u)) - lz_size;
+        size_t lz_pad    = ((lz_size + static_cast<size_t>(3u)) & ~static_cast<size_t>(3u)) - lz_size;
         lp_hdr->mu_size  = static_cast<uint16_t>(lz_size + lz_pad);
         lp_dst          += lz_pad;
         if(lp_attrs_head)

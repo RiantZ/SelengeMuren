@@ -159,10 +159,10 @@ s_trc_parsed parse_captured_traces()
         size_t lz_off = 0;
         while(lz_off < lo_stream.size())
         {
-            // the record starts in the last payload that begins at or before it; 64-bit reads need it 8-aligned
+            // the record starts in the last payload that begins at or before it; records sit 4-aligned
             const auto   lo_part    = std::upper_bound(lo_starts.begin(), lo_starts.end(), lz_off) - 1;
             const size_t lz_buf_off = sizeof(s_p8_data_buf_hdr) + (lz_off - *lo_part);
-            EXPECT_EQ(lz_buf_off % 8, 0u) << "trace record at stream offset " << lz_off << " is not 8-aligned";
+            EXPECT_EQ(lz_buf_off % 4, 0u) << "trace record at stream offset " << lz_off << " is not 4-aligned";
 
             // span ID, time delta, size and type sit at the same offsets in every record
             s_p8_trc_end_dat lo_head = {};
@@ -834,7 +834,7 @@ TEST_F(c_trc_content_test, begin_with_attributes_serializes_them)
                        reinterpret_cast<const uint8_t *>(&lu_len) + sizeof(lu_len));
     lo_expected.insert(lo_expected.end(), { 'h', 'e', 'l', 'l', 'o' });
 
-    const size_t lz_size = (sizeof(s_p8_trc_begin_dat) + lo_expected.size() + 7u) & ~static_cast<size_t>(7u);
+    const size_t lz_size = (sizeof(s_p8_trc_begin_dat) + lo_expected.size() + 3u) & ~static_cast<size_t>(3u);
     EXPECT_EQ(lr_begin.mu_size, lz_size);
     ASSERT_GE(lr_begin.mo_tail.size(), lo_expected.size());
     EXPECT_TRUE(std::equal(lo_expected.begin(), lo_expected.end(), lr_begin.mo_tail.begin()));
@@ -862,7 +862,7 @@ TEST_F(c_trc_content_test, record_larger_than_a_buffer_continues_in_next_buffer)
     EXPECT_EQ(lo_parsed.mz_fragmented_bufs, 1u);
 
     const size_t     lz_attr  = sizeof(p8_attr_id) + sizeof(uint16_t) + ls_blob.size();
-    const size_t     lz_size  = (sizeof(s_p8_trc_begin_dat) + lz_attr + 7u) & ~static_cast<size_t>(7u);
+    const size_t     lz_size  = (sizeof(s_p8_trc_begin_dat) + lz_attr + 3u) & ~static_cast<size_t>(3u);
     const s_trc_rec &lr_begin = lo_parsed.mo_recs[0];
     EXPECT_EQ(lr_begin.mu_attrs_count, 1u);
     EXPECT_EQ(lr_begin.mu_size, lz_size);
@@ -907,8 +907,9 @@ TEST_F(c_trc_content_test, number_split_across_buffers_keeps_next_record_aligned
 
     const s_trc_rec &lr_split = lo_parsed.mo_recs[0];
     const size_t     lz_num   = sizeof(p8_attr_id) + sizeof(uint16_t) + lz_fill;
+    const size_t     lz_rec   = sizeof(s_p8_trc_begin_dat) + lz_num + sizeof(p8_attr_id) + sizeof(uint64_t);
     EXPECT_EQ(lr_split.mu_attrs_count, 2u);
-    EXPECT_EQ(lr_split.mu_size, lz_payload + 8u);
+    EXPECT_EQ(lr_split.mu_size, (lz_rec + 3u) & ~static_cast<size_t>(3u));
     ASSERT_GE(lr_split.mo_tail.size(), lz_num + sizeof(p8_attr_id) + sizeof(uint64_t));
     p8_attr_id li_got_id = 0;
     uint64_t   lu_got    = 0;
@@ -917,8 +918,8 @@ TEST_F(c_trc_content_test, number_split_across_buffers_keeps_next_record_aligned
     EXPECT_EQ(li_got_id, li_split);
     EXPECT_EQ(lu_got, lu_value);
 
-    // 4 bytes of the number and 4 bytes of padding open the second buffer
-    EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr) + 8u);
+    // the rest of the number (and the padding, if any) opens the second buffer, the next record follows 4-aligned
+    EXPECT_EQ(lo_parsed.mo_recs[1].mz_buf_off, sizeof(s_p8_data_buf_hdr) + lr_split.mu_size - lz_payload);
 }
 
 TEST_F(c_trc_content_test, record_dropped_mid_write_leaves_no_trace)
@@ -1038,7 +1039,7 @@ TEST_F(c_trc_content_test, oversized_attributes_are_cut_to_fit_the_record)
     const s_trc_rec *lp_2 = find_begin(lo_parsed.mo_recs, lu_ids[2]);
     ASSERT_NE(lp_2, nullptr);
     EXPECT_EQ(lp_2->mu_attrs_count, 255u);
-    EXPECT_EQ(lp_2->mu_size, (sizeof(s_p8_trc_begin_dat) + 255 * lz_num + 7u) & ~static_cast<size_t>(7u));
+    EXPECT_EQ(lp_2->mu_size, (sizeof(s_p8_trc_begin_dat) + 255 * lz_num + 3u) & ~static_cast<size_t>(3u));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

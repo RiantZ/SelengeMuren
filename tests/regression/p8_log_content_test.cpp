@@ -43,11 +43,11 @@ size_t frag_string_len(size_t iz_buf_sz)
 // helpers: reassemble captured buffers into a linear payload
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Each log item is padded so its total size (mu_size) lands on an 8-byte
+// Each log item is padded so its total size (mu_size) lands on a 4-byte
 // boundary; mirror that rounding when computing expected wire sizes.
 static uint32_t expected_item_size(size_t iz_unpadded)
 {
-    return static_cast<uint16_t>((iz_unpadded + 7u) & ~static_cast<size_t>(7u));
+    return static_cast<uint16_t>((iz_unpadded + 3u) & ~static_cast<size_t>(3u));
 }
 
 // a record as a reader sees it: the wire header and the optional fields its flags announce
@@ -1783,7 +1783,7 @@ TEST_F(c_log_content_test, multi_send_three_items)
     }
 }
 
-TEST_F(c_log_content_test, item_size_8_byte_aligned)
+TEST_F(c_log_content_test, item_size_4_byte_aligned)
 {
     std::thread lo_thread(
         []()
@@ -1829,7 +1829,7 @@ TEST_F(c_log_content_test, item_size_8_byte_aligned)
 
     for(const auto &lo_item : lo_items)
     {
-        EXPECT_EQ(lo_item.mo_hdr.mu_size % 8u, 0u) << "item size must be 8-byte aligned";
+        EXPECT_EQ(lo_item.mo_hdr.mu_size % 4u, 0u) << "item size must be 4-byte aligned";
         EXPECT_EQ(lo_item.mo_payload.size(), lo_item.mo_hdr.mu_size - lo_item.mo_hdr.mz_head);
     }
 }
@@ -2097,8 +2097,8 @@ TEST_F(c_log_content_test, verbosity_default_gates_null_module)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // A piece that does not fit at the buffer end continues in the next buffer, so no buffer ends with a gap and the
-// next record stays 8-aligned.
-TEST_F(c_log_content_test, split_piece_keeps_next_record_8_aligned)
+// next record stays 4-aligned.
+TEST_F(c_log_content_test, split_piece_keeps_next_record_4_aligned)
 {
     const size_t lz_buf_sz = p8_test_get_buffer_size();
     // bytes before the first string body: buffer header, record header, string length
@@ -2187,7 +2187,7 @@ TEST_F(c_log_content_test, split_piece_keeps_next_record_8_aligned)
 
             for(const auto &lr_item : lo_items)
             {
-                EXPECT_EQ(lr_item.mz_off % 8u, 0u) << "record in buffer " << lr_item.mz_buf << " is not 8-aligned";
+                EXPECT_EQ(lr_item.mz_off % 4u, 0u) << "record in buffer " << lr_item.mz_buf << " is not 4-aligned";
             }
 
             for(const auto &lr_buf : p8_test_get_captured_buffers())
