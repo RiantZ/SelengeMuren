@@ -53,7 +53,8 @@ static uint32_t expected_item_size(size_t iz_unpadded)
 // a record as a reader sees it: the wire header and the optional fields its flags announce
 struct s_log_item
 {
-    uint64_t mu_hash        = 0;
+    uint32_t mu_desc_index  = 0;
+    uint64_t mu_hash        = 0; // of the descriptor the record's number points to, 0 when it was not sent
     uint64_t mu_timestamp   = 0;
     uint32_t mu_thread_id   = 0;
     uint16_t mu_size        = 0;
@@ -66,6 +67,38 @@ struct s_log_item
     uint8_t  mu_attrs_count = 0; // on the wire only with P8_LOG_FLAG_ATTRS
     size_t   mz_head        = 0; // header + optional fields: the args start here
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// hash of the log descriptor with number iu_index in the service buffers; 0 when no such descriptor was sent
+static uint64_t get_log_desc_hash(uint32_t iu_index)
+{
+    for(const auto &lr_buf : p8_test_get_service_buffers())
+    {
+        size_t lz_off = 0;
+        while(lz_off + sizeof(s_p8_svc_hdr) <= lr_buf.size())
+        {
+            s_p8_svc_hdr lo_hdr = {};
+            memcpy(&lo_hdr, lr_buf.data() + lz_off, sizeof(lo_hdr));
+            if(lo_hdr.mu_size < sizeof(s_p8_svc_hdr) || lz_off + lo_hdr.mu_size > lr_buf.size())
+            {
+                break;
+            }
+
+            if(P8_SVC_TYPE_LOG_DESC == lo_hdr.mu_svc_type && lo_hdr.mu_size >= sizeof(s_p8_log_item_svc))
+            {
+                s_p8_log_item_svc lo_desc = {};
+                memcpy(&lo_desc, lr_buf.data() + lz_off, sizeof(lo_desc));
+                if(lo_desc.mu_index == iu_index)
+                {
+                    return lo_desc.mu_hash;
+                }
+            }
+            lz_off += lo_hdr.mu_size;
+        }
+    }
+
+    return 0;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // false when the header or its optional fields do not fit the iz_avail bytes at ip_rec; ir_buf is the header of the
@@ -94,12 +127,13 @@ static bool read_item_head(const s_p8_data_buf_hdr &ir_buf,
         return false;
     }
     memcpy(&lo_hdr, ip_rec, sizeof(lo_hdr));
-    or_item.mu_hash      = lo_hdr.mu_hash;
-    or_item.mu_timestamp = ir_buf.mu_base_ts + static_cast<int64_t>(lo_hdr.mi_ts_delta);
-    or_item.mu_thread_id = ir_buf.mu_thread_id;
-    or_item.mu_size      = lo_hdr.mu_size;
-    or_item.mu_level     = lo_hdr.mu_level;
-    or_item.mu_flags     = lo_hdr.mu_flags;
+    or_item.mu_desc_index = lo_hdr.mu_desc_index;
+    or_item.mu_hash       = get_log_desc_hash(lo_hdr.mu_desc_index);
+    or_item.mu_timestamp  = ir_buf.mu_base_ts + static_cast<int64_t>(lo_hdr.mi_ts_delta);
+    or_item.mu_thread_id  = ir_buf.mu_thread_id;
+    or_item.mu_size       = lo_hdr.mu_size;
+    or_item.mu_level      = lo_hdr.mu_level;
+    or_item.mu_flags      = lo_hdr.mu_flags;
 
     if((0 != (lo_hdr.mu_flags & P8_LOG_FLAG_TRACE_ID)) && !ll_take(&or_item.mu_trace_id, sizeof(uint64_t)))
     {
@@ -735,7 +769,7 @@ TEST_F(c_log_content_test, item_hdr_args_size_single_int)
     auto lo_parsed = parse_captured_buffers();
     // without attributes the record has no args size: the one arg fills it up to the padding
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint64_t)));
+              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
@@ -761,7 +795,7 @@ TEST_F(c_log_content_test, item_hdr_total_size_no_attrs)
     auto lo_parsed = parse_captured_buffers();
 
     EXPECT_EQ(lo_parsed.mo_item_hdr.mu_size,
-              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint64_t)));
+              expected_item_size(lo_parsed.mo_item_hdr.mz_head + P8_SIZE_OF_ARG(uint32_t)));
 }
 
 TEST_F(c_log_content_test, item_hdr_attrs_count_zero)

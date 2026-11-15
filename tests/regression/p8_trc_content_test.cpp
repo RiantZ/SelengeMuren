@@ -63,7 +63,8 @@ struct s_trc_rec
     uint32_t             mu_thread_id   = 0;
     uint64_t             mu_timestamp   = 0;
     uint64_t             mu_span_id     = 0;
-    uint64_t             mu_hash        = 0;
+    uint32_t             mu_desc_index  = 0;
+    uint64_t             mu_hash        = 0; // of the descriptor the begin record's number points to, 0 if not sent
     uint64_t             mu_parent_id   = 0;
     size_t               mz_buf_off     = 0; // record start inside the buffer it starts in
     std::vector<uint8_t> mo_tail;            // bytes after the fixed part: attributes and padding
@@ -77,6 +78,37 @@ struct s_trc_parsed
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// span descriptor hashes by descriptor number, from the service buffers
+std::map<uint32_t, uint64_t> get_trc_desc_hashes()
+{
+    std::map<uint32_t, uint64_t> lo_hashes;
+
+    for(const auto &lr_buf : p8_test_get_service_buffers())
+    {
+        size_t lz_off = 0;
+        while(lz_off + sizeof(s_p8_svc_hdr) <= lr_buf.size())
+        {
+            s_p8_svc_hdr lo_hdr = {};
+            memcpy(&lo_hdr, lr_buf.data() + lz_off, sizeof(lo_hdr));
+            if(lo_hdr.mu_size < sizeof(s_p8_svc_hdr) || lz_off + lo_hdr.mu_size > lr_buf.size())
+            {
+                break;
+            }
+
+            if(P8_SVC_TYPE_TRACE == lo_hdr.mu_svc_type && lo_hdr.mu_size >= sizeof(s_p8_trc_item_svc))
+            {
+                s_p8_trc_item_svc lo_desc = {};
+                memcpy(&lo_desc, lr_buf.data() + lz_off, sizeof(lo_desc));
+                lo_hashes[lo_desc.mu_index] = lo_desc.mu_hash;
+            }
+            lz_off += lo_hdr.mu_size;
+        }
+    }
+
+    return lo_hashes;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Drain the writers, join each writer's trace buffers in buf_seq order and split the stream into records
 s_trc_parsed parse_captured_traces()
 {
@@ -85,6 +117,9 @@ s_trc_parsed parse_captured_traces()
     std::map<uint32_t, std::map<uint32_t, s_p8_data_buf_hdr>>    lo_buf_hdrs; // writer id -> buf_seq -> header
 
     p8_test_drain_writers();
+
+    // after the drain, so the descriptors of every drained span are in
+    const std::map<uint32_t, uint64_t> lo_desc_hashes = get_trc_desc_hashes();
 
     for(const auto &lr_buf : p8_test_get_captured_buffers())
     {
@@ -166,9 +201,13 @@ s_trc_parsed parse_captured_traces()
                 }
                 memcpy(&lo_begin, lo_stream.data() + lz_off, sizeof(lo_begin));
                 lo_rec.mu_attrs_count = lo_begin.mu_attrs_count;
-                lo_rec.mu_hash        = lo_begin.mu_hash;
+                lo_rec.mu_desc_index  = lo_begin.mu_desc_index;
                 lo_rec.mu_parent_id   = lo_begin.mu_parent_id;
-                lz_fixed              = sizeof(lo_begin);
+                if(auto lo_it = lo_desc_hashes.find(lo_begin.mu_desc_index); lo_it != lo_desc_hashes.end())
+                {
+                    lo_rec.mu_hash = lo_it->second;
+                }
+                lz_fixed = sizeof(lo_begin);
             }
             lo_rec.mo_tail.assign(lo_stream.begin() + static_cast<ptrdiff_t>(lz_off + lz_fixed),
                                   lo_stream.begin() + static_cast<ptrdiff_t>(lz_off + lo_head.mu_size));

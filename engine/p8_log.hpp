@@ -13,6 +13,7 @@
 struct s_p8_log_desc
 {
     uint64_t      mu_hash;
+    uint32_t      mu_index; // number the records carry, sent in s_p8_log_item_svc
     const char   *mp_format;
     const char   *mp_file;
     const char   *mp_function;

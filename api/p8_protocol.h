@@ -174,6 +174,7 @@ extern "C"
         s_p8_svc_hdr ms_hdr;          // service item header, 4
         uint32_t     mu_line;         // source line number
         uint64_t     mu_hash;         // log descriptor hash (key into descriptor tree)
+        uint32_t     mu_index;        // descriptor number, log records refer to it by s_p8_log_item_dat::mu_desc_index
         uint16_t     mu_format_len;   // format string length in bytes
         uint16_t     mu_file_len;     // file path string length in bytes
         uint16_t     mu_function_len; // function name string length in bytes
@@ -222,17 +223,17 @@ extern "C"
     };
 
     // Per-occurrence log record emitted into a P8_PACKET_LOGS buffer. References its
-    // immutable descriptor (s_p8_log_item_svc) by mu_hash and carries the runtime data:
+    // immutable descriptor (s_p8_log_item_svc) by its number and carries the runtime data:
     // time, level, the optional fields of mu_flags, serialized var-args and attributes; the thread is in the
     // buffer header.
     // The header and the optional fields are never split between buffers; the rest may be (P8_DATA_FLAG_FRAGMENT).
     struct s_p8_log_item_dat
     {
-        uint64_t mu_hash;     // log descriptor hash (key into descriptor tree)
-        int32_t  mi_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
-        uint16_t mu_size;     // total item size in bytes (header + optional fields + args + attrs + padding)
-        uint8_t  mu_level;    // e_p8_level
-        uint8_t  mu_flags;    // P8_LOG_FLAG_XXX: the optional fields that follow
+        uint32_t mu_desc_index; // log descriptor number: s_p8_log_item_svc::mu_index
+        int32_t  mi_ts_delta;   // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
+        uint16_t mu_size;       // total item size in bytes (header + optional fields + args + attrs + padding)
+        uint8_t  mu_level;      // e_p8_level
+        uint8_t  mu_flags;      // P8_LOG_FLAG_XXX: the optional fields that follow
         //* optional fields, in flag order, unaligned:
         //*   [uint64_t trace ID][uint16_t module ID][uint16_t CPU core ID][uint16_t args size + uint8_t attrs count]
         //* Serialized Variable agruments [int32][int64][double][length in bytes (16b) + string data] ...;
@@ -251,10 +252,12 @@ extern "C"
     {
         s_p8_svc_hdr ms_hdr;       // service item header, 4
         uint32_t     mu_line;      // source line number
-        uint64_t     mu_hash;      // span descriptor hash, the key s_p8_trc_begin_dat::mu_hash refers to
+        uint64_t     mu_hash;      // span descriptor hash (key into descriptor tree)
         uint64_t     mu_file_hash; // P8_SVC_TYPE_FILE_NAME string
         uint64_t     mu_func_hash; // P8_SVC_TYPE_FUNC_NAME string
         uint64_t     mu_name_hash; // P8_SVC_TYPE_SPAN_NAME string
+        uint32_t     mu_index;     // descriptor number, begin records refer to it by s_p8_trc_begin_dat::mu_desc_index
+        uint32_t     mu_padding;   // alignment, 0
     };
 
     // Span ID, time delta, size and type sit at the same offsets in every trace record; the thread is in the buffer
@@ -268,8 +271,9 @@ extern "C"
         uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
         uint8_t  mu_type;        // P8_TRC_ITEM_BEGIN or P8_TRC_ITEM_BEGIN_ASYNC
         uint8_t  mu_attrs_count; // number of serialized attributes
-        uint64_t mu_hash;        // span descriptor hash (key into descriptor tree)
         uint64_t mu_parent_id;   // parent span ID; 0 - a new trace
+        uint32_t mu_desc_index;  // span descriptor number: s_p8_trc_item_svc::mu_index
+        uint32_t mu_padding;     // alignment, 0
         //* Serialized attributes [p8_attr_id + data][...]
         //* padding to tail to 8 bytes boundary
     };

@@ -169,13 +169,15 @@ public:
                                     const char *ip_function,
                                     const char *ip_format);
 
-    // span descriptors: serialize a call site and its strings once per process. Waits for a free buffer when the
-    // service buffer is full, so call it without locks held; false only when no buffer comes (shutdown)
+    // span descriptors: serialize a call site and its strings once per process, ou_index gets the descriptor number.
+    // Waits for a free buffer when the service buffer is full, so call it without locks held; false only when no
+    // buffer comes (shutdown)
     bool resolve_trc_desc(uint64_t    iu_hash,
                           const char *ip_file,
                           uint32_t    iu_line,
                           const char *ip_function,
-                          const char *ip_name);
+                          const char *ip_name,
+                          uint32_t   &ou_index);
 
     // span IDs: the first of P8_CORE_SPAN_ID_BLOCK IDs that are unique in the process
     uint64_t reserve_span_ids();
@@ -265,6 +267,7 @@ private:
                        uint64_t                     &ou_hash,
                        std::unique_lock<std::mutex> &io_lock);
     bool serialize_trc_desc(uint64_t                      iu_hash,
+                            uint32_t                      iu_index,
                             uint32_t                      iu_line,
                             uint64_t                      iu_file_hash,
                             uint64_t                      iu_func_hash,
@@ -304,6 +307,7 @@ private:
     // log descriptor registry (global, shared across all TLS cp8_log instances)
     std::map<uint64_t, s_p8_log_desc *> mo_log_descs;
     std::mutex                          mo_log_desc_mutex;
+    uint32_t                            mu_next_log_index = 0; // number of the next log descriptor, under the mutex
 
     // attribute registry (global, TLS consumers sync via sync_attr_cache)
     std::vector<s_p8_attr_desc *>               mo_attr_descs;
@@ -333,13 +337,14 @@ private:
     kit::c_lst<s_p8_svc_buf> mo_svc_buffers { 8 };
     std::mutex               mo_svc_mutex;
 
-    // hashes of the span call sites and strings already serialized; the mutex is held while their entries wait for a
-    // service buffer, so none is sent twice (lock order: trc desc -> svc)
-    std::unordered_set<uint64_t> mo_trc_descs;
-    std::unordered_set<uint64_t> mo_file_names;
-    std::unordered_set<uint64_t> mo_func_names;
-    std::unordered_set<uint64_t> mo_span_names;
-    std::mutex                   mo_trc_desc_mutex;
+    // hashes of the span call sites (with their descriptor numbers) and strings already serialized; the mutex is held
+    // while their entries wait for a service buffer, so none is sent twice (lock order: trc desc -> svc)
+    std::unordered_map<uint64_t, uint32_t> mo_trc_descs;
+    std::unordered_set<uint64_t>           mo_file_names;
+    std::unordered_set<uint64_t>           mo_func_names;
+    std::unordered_set<uint64_t>           mo_span_names;
+    std::mutex                             mo_trc_desc_mutex;
+    uint32_t mu_next_trc_index = 0; // number of the next span descriptor, under the mutex
 
     // start of the next block of span IDs; IDs begin at 1 because 0 means "no span"
     std::atomic<uint64_t> mu_span_id_seq { 1 };
