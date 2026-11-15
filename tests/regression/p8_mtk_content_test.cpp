@@ -109,7 +109,7 @@ s_mtk_parsed parse_captured_metrics()
                 break;
             }
             lo_result.mo_items.push_back(lo_item);
-            lo_result.mo_times.push_back(lo_hdr.mu_base_ts + lo_item.mu_ts_delta);
+            lo_result.mo_times.push_back(lo_hdr.mu_base_ts + static_cast<int64_t>(lo_item.mi_ts_delta));
             lz_off += lo_item.mu_size;
         }
     }

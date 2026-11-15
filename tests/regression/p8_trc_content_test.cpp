@@ -152,7 +152,7 @@ s_trc_parsed parse_captured_traces()
             lo_rec.mu_type      = lo_head.mu_type;
             lo_rec.mu_size      = lo_head.mu_size;
             lo_rec.mu_thread_id = lr_part_hdr.mu_thread_id;
-            lo_rec.mu_timestamp = lr_part_hdr.mu_base_ts + lo_head.mu_ts_delta;
+            lo_rec.mu_timestamp = lr_part_hdr.mu_base_ts + static_cast<int64_t>(lo_head.mi_ts_delta);
             lo_rec.mu_span_id   = lo_head.mu_span_id;
 
             size_t lz_fixed     = sizeof(s_p8_trc_end_dat);

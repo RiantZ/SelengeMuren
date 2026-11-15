@@ -79,7 +79,7 @@ bool cp8_mtk::emit(h_p8_mtk_id ih_id, double id_value)
     {
         s_p8_mtk_item_dat *lp_hdr  = reinterpret_cast<s_p8_mtk_item_dat *>(mp_buffer + mz_buf_used);
 
-        lp_hdr->mu_ts_delta        = get_ts_delta();
+        lp_hdr->mi_ts_delta        = get_ts_delta();
         lp_hdr->md_value           = id_value;
         lp_hdr->mi_id              = ih_id;
         lp_hdr->mu_size            = static_cast<uint16_t>(sizeof(s_p8_mtk_item_dat));

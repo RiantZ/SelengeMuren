@@ -115,7 +115,7 @@ static_assert(offsetof(struct s_p8_log_item_svc, mu_args_count) == 22,
 // s_p8_log_item_dat
 static_assert(sizeof(struct s_p8_log_item_dat) == 16, "s_p8_log_item_dat wire size changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_hash) == 0, "s_p8_log_item_dat::mu_hash offset changed");
-static_assert(offsetof(struct s_p8_log_item_dat, mu_ts_delta) == 8, "s_p8_log_item_dat::mu_ts_delta offset changed");
+static_assert(offsetof(struct s_p8_log_item_dat, mi_ts_delta) == 8, "s_p8_log_item_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_size) == 12, "s_p8_log_item_dat::mu_size offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_level) == 14, "s_p8_log_item_dat::mu_level offset changed");
 static_assert(offsetof(struct s_p8_log_item_dat, mu_flags) == 15, "s_p8_log_item_dat::mu_flags offset changed");
@@ -139,7 +139,7 @@ static_assert(offsetof(struct s_p8_trc_item_svc, mu_name_hash) == 32,
 // trace records: span ID, time delta, size and type at the same offsets in every record
 static_assert(sizeof(struct s_p8_trc_begin_dat) == 32, "s_p8_trc_begin_dat wire size changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_span_id) == 0, "s_p8_trc_begin_dat::mu_span_id offset changed");
-static_assert(offsetof(struct s_p8_trc_begin_dat, mu_ts_delta) == 8, "s_p8_trc_begin_dat::mu_ts_delta offset changed");
+static_assert(offsetof(struct s_p8_trc_begin_dat, mi_ts_delta) == 8, "s_p8_trc_begin_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_size) == 12, "s_p8_trc_begin_dat::mu_size offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_type) == 14, "s_p8_trc_begin_dat::mu_type offset changed");
 static_assert(offsetof(struct s_p8_trc_begin_dat, mu_attrs_count) == 15,
@@ -150,7 +150,7 @@ static_assert(offsetof(struct s_p8_trc_begin_dat, mu_parent_id) == 24,
 
 static_assert(sizeof(struct s_p8_trc_end_dat) == 16, "s_p8_trc_end_dat wire size changed");
 static_assert(offsetof(struct s_p8_trc_end_dat, mu_span_id) == 0, "s_p8_trc_end_dat::mu_span_id offset changed");
-static_assert(offsetof(struct s_p8_trc_end_dat, mu_ts_delta) == 8, "s_p8_trc_end_dat::mu_ts_delta offset changed");
+static_assert(offsetof(struct s_p8_trc_end_dat, mi_ts_delta) == 8, "s_p8_trc_end_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_trc_end_dat, mu_size) == 12, "s_p8_trc_end_dat::mu_size offset changed");
 static_assert(offsetof(struct s_p8_trc_end_dat, mu_type) == 14, "s_p8_trc_end_dat::mu_type offset changed");
 static_assert(offsetof(struct s_p8_trc_end_dat, mu_padding) == 15, "s_p8_trc_end_dat::mu_padding offset changed");
@@ -170,7 +170,7 @@ static_assert(offsetof(struct s_p8_mtk_svc, mu_unit_len) == 30, "s_p8_mtk_svc::m
 // s_p8_mtk_item_dat
 static_assert(sizeof(struct s_p8_mtk_item_dat) == 24, "s_p8_mtk_item_dat wire size changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, md_value) == 0, "s_p8_mtk_item_dat::md_value offset changed");
-static_assert(offsetof(struct s_p8_mtk_item_dat, mu_ts_delta) == 8, "s_p8_mtk_item_dat::mu_ts_delta offset changed");
+static_assert(offsetof(struct s_p8_mtk_item_dat, mi_ts_delta) == 8, "s_p8_mtk_item_dat::mi_ts_delta offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mi_id) == 12, "s_p8_mtk_item_dat::mi_id offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mu_size) == 16, "s_p8_mtk_item_dat::mu_size offset changed");
 static_assert(offsetof(struct s_p8_mtk_item_dat, mu_flags) == 18, "s_p8_mtk_item_dat::mu_flags offset changed");

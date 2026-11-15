@@ -95,7 +95,7 @@ static bool read_item_head(const s_p8_data_buf_hdr &ir_buf,
     }
     memcpy(&lo_hdr, ip_rec, sizeof(lo_hdr));
     or_item.mu_hash      = lo_hdr.mu_hash;
-    or_item.mu_timestamp = ir_buf.mu_base_ts + lo_hdr.mu_ts_delta;
+    or_item.mu_timestamp = ir_buf.mu_base_ts + static_cast<int64_t>(lo_hdr.mi_ts_delta);
     or_item.mu_thread_id = ir_buf.mu_thread_id;
     or_item.mu_size      = lo_hdr.mu_size;
     or_item.mu_level     = lo_hdr.mu_level;

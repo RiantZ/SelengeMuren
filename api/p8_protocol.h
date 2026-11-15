@@ -209,7 +209,7 @@ extern "C"
         uint32_t mu_thread_id;   // thread ID which emits data
         uint32_t mu_writer_id;   // unique per writer for the whole session; a writer's buffers come in time order
         uint32_t mu_buf_seq;     // the writer's buffer number: 0, 1, 2, ...; a gap means lost buffers
-        uint64_t mu_base_ts;     // writer clock when the buffer was started; record times are deltas to it
+        uint64_t mu_base_ts;     // writer clock when the buffer was started; record times are signed deltas to it
     };
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -232,7 +232,7 @@ extern "C"
     struct s_p8_log_item_dat
     {
         uint64_t mu_hash;     // log descriptor hash (key into descriptor tree)
-        uint32_t mu_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
+        int32_t  mi_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
         uint16_t mu_size;     // total item size in bytes (header + optional fields + args + attrs + padding)
         uint8_t  mu_level;    // e_p8_level
         uint8_t  mu_flags;    // P8_LOG_FLAG_XXX: the optional fields that follow
@@ -267,7 +267,7 @@ extern "C"
     struct s_p8_trc_begin_dat
     {
         uint64_t mu_span_id;     // span ID, unique in the process
-        uint32_t mu_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
+        int32_t  mi_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
         uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
         uint8_t  mu_type;        // P8_TRC_ITEM_BEGIN or P8_TRC_ITEM_BEGIN_ASYNC
         uint8_t  mu_attrs_count; // number of serialized attributes
@@ -281,7 +281,7 @@ extern "C"
     struct s_p8_trc_end_dat
     {
         uint64_t mu_span_id;  // span ID returned by p8_trc_begin / p8_trc_begin_async
-        uint32_t mu_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
+        int32_t  mi_ts_delta; // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
         uint16_t mu_size;     // item size in bytes, always sizeof(s_p8_trc_end_dat)
         uint8_t  mu_type;     // P8_TRC_ITEM_END
         uint8_t  mu_padding;  // alignment, 0
@@ -318,7 +318,7 @@ extern "C"
     struct s_p8_mtk_item_dat
     {
         double   md_value;       // sample value
-        uint32_t mu_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
+        int32_t  mi_ts_delta;    // monotonic clock timestamp - s_p8_data_buf_hdr::mu_base_ts
         int32_t  mi_id;          // metric descriptor ID (h_p8_mtk_id)
         uint16_t mu_size;        // total item size in bytes (header + attrs + padding)
         uint8_t  mu_flags;       // todo

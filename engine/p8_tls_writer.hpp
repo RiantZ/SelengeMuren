@@ -39,10 +39,11 @@ protected:
         return kit::get_hires_ticks();
     }
 
-    // stamp of a record as a delta to the base time of the buffer that holds its header
-    uint32_t get_ts_delta() const
+    // stamp of a record as a delta to the base time of the buffer that holds its header; negative if the clock steps
+    // back
+    int32_t get_ts_delta() const
     {
-        return static_cast<uint32_t>(get_ticks() - reinterpret_cast<const s_p8_data_buf_hdr *>(mp_buffer)->mu_base_ts);
+        return static_cast<int32_t>(get_ticks() - reinterpret_cast<const s_p8_data_buf_hdr *>(mp_buffer)->mu_base_ts);
     }
 
     // Attributes of a record in one pass, iz_record bytes into it: the record stays within P8_MAX_RECORD_SIZE (a

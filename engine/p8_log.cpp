@@ -480,7 +480,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
 
         lp_hdr              = reinterpret_cast<struct s_p8_log_item_dat *>(lp_base);
         lp_hdr->mu_hash     = lp_desc->mu_hash;
-        lp_hdr->mu_ts_delta = get_ts_delta();
+        lp_hdr->mi_ts_delta = get_ts_delta();
         lp_hdr->mu_level    = static_cast<uint8_t>(ie_level);
         lp_hdr->mu_flags    = lu_flags;
 
