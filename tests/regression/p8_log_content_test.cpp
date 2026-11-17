@@ -1687,6 +1687,30 @@ TEST_F(c_log_content_test, wide_string_arg_is_cut_on_a_whole_character)
 }
 #endif
 
+TEST_F(c_log_content_test, wide_non_bmp_string_arg_is_cut_on_a_whole_character)
+{
+    // U+1F600 is one UTF-32 unit on Linux and macOS and a surrogate pair on Windows: 4 bytes either way
+    std::wstring lo_wide;
+    for(size_t lz_i = 0; lz_i < 30000; ++lz_i)
+    {
+        lo_wide += L"\U0001F600";
+    }
+
+    std::thread lo_thread(
+        [&lo_wide]()
+        { p8_log_sent(e_p8_trace0, nullptr, 0, 405, __FILE__, __FUNCTION__, 0, nullptr, "%ls", lo_wide.c_str()); });
+    lo_thread.join();
+
+    auto lo_items = parse_placed_items();
+    ASSERT_EQ(lo_items.size(), 1u);
+    const size_t lz_room = P8_MAX_RECORD_SIZE - lo_items[0].mo_hdr.mz_head - sizeof(uint16_t);
+    size_t       lz_off  = 0;
+    const size_t lz_len  = read_string_len(lo_items[0].mo_payload, lz_off);
+    EXPECT_EQ(lz_len % 4, 0u);
+    EXPECT_LE(lz_len, lz_room);
+    EXPECT_GT(lz_len + 4, lz_room);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Group 8: multiple p8_log_sent calls in a single thread
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

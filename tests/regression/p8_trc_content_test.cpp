@@ -1042,6 +1042,45 @@ TEST_F(c_trc_content_test, oversized_attributes_are_cut_to_fit_the_record)
     EXPECT_EQ(lp_2->mu_size, (sizeof(s_p8_trc_begin_dat) + 255 * lz_num + 3u) & ~static_cast<size_t>(3u));
 }
 
+TEST_F(c_trc_content_test, oversized_utf8_attribute_is_cut_on_a_character_boundary)
+{
+    const p8_attr_id li_str = p8_attr_register("trc_utf8_huge", e_p8_attr_str);
+    ASSERT_TRUE(P8_IS_ATTR_VALID(li_str));
+
+    // U+20AC takes 3 bytes, so a cut inside a character shows as a length not divisible by 3
+    std::string ls_euros;
+    for(size_t lz_i = 0; lz_i < 30000; ++lz_i)
+    {
+        ls_euros += "\xE2\x82\xAC";
+    }
+    uint64_t lu_id = 0;
+    run_in_thread(
+        [&]()
+        {
+            s_p8_attr_val lo_attr = {};
+            lo_attr.m_id          = li_str;
+            lo_attr.mp_str        = ls_euros.c_str();
+            lu_id                 = p8_trc_begin_async(0, "utf8_attr", 10, gp_file, gp_func, 1, &lo_attr);
+        });
+
+    auto             lo_parsed = parse_captured_traces();
+    const s_trc_rec *lp_rec    = find_begin(lo_parsed.mo_recs, lu_id);
+    ASSERT_NE(lp_rec, nullptr);
+    EXPECT_EQ(lp_rec->mu_attrs_count, 1u);
+
+    // the room a first string attribute gets in the largest record, as in the test above
+    const size_t lz_max  = UINT16_MAX & ~static_cast<size_t>(7u);
+    const size_t lz_head = sizeof(p8_attr_id) + sizeof(uint16_t);
+    const size_t lz_room = lz_max - sizeof(s_p8_trc_begin_dat) - lz_head;
+    uint16_t     lu_len  = 0;
+    ASSERT_GE(lp_rec->mo_tail.size(), lz_head);
+    memcpy(&lu_len, lp_rec->mo_tail.data() + sizeof(p8_attr_id), sizeof(lu_len));
+    const size_t lz_len = lu_len;
+    EXPECT_EQ(lz_len % 3, 0u);
+    EXPECT_LE(lz_len, lz_room);
+    EXPECT_GT(lz_len + 3, lz_room);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // service descriptors
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
