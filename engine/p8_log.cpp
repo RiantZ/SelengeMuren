@@ -7,6 +7,7 @@
 #include <wchar.h>
 
 #include "kit/time.hpp"
+#include "kit/utf.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 enum e_prefix_type
@@ -529,37 +530,20 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                 const void *lp_str = nullptr;
                 uint16_t    lu_len = 0;
 
-                if(P8_LOG_ARG_TYPE_USTR16 == lp_arg->mu_type)
+                if(P8_LOG_ARG_TYPE_USTR16 == lp_arg->mu_type || P8_LOG_ARG_TYPE_USTR32 == lp_arg->mu_type)
                 {
-                    const uint16_t *lp_u16  = va_arg(io_args, const uint16_t *);
-                    lp_str                  = lp_u16;
-                    const uint16_t *lp_zero = lp_u16;
-                    if(lp_zero)
-                    {
-                        while(*lp_zero)
-                        {
-                            lp_zero++;
-                        }
-                        size_t lz_bytes = (lp_zero - lp_u16) * sizeof(uint16_t);
-                        if(lz_bytes > lz_str_room)
-                        {
-                            lz_bytes = p8_cut_utf16(lp_u16, lz_str_room);
-                        }
-                        lu_len = static_cast<uint16_t>(lz_bytes);
-                    }
-                }
-                else if(P8_LOG_ARG_TYPE_USTR32 == lp_arg->mu_type)
-                {
+                    // %ls is wchar_t on every platform: UTF-16 on Windows, UTF-32 elsewhere
                     const wchar_t *lp_w = va_arg(io_args, const wchar_t *);
                     lp_str              = lp_w;
                     if(lp_w)
                     {
-                        size_t lz_bytes = wcslen(lp_w) * sizeof(wchar_t);
-                        if(lz_bytes > lz_str_room)
-                        {
-                            lz_bytes = lz_str_room - lz_str_room % sizeof(wchar_t);
-                        }
-                        lu_len = static_cast<uint16_t>(lz_bytes);
+                        const size_t lz_max = lz_str_room / sizeof(wchar_t);
+#if defined(G_OS_WINDOWS)
+                        const size_t lz_units = kit::cut_utf16(lp_w, wcslen(lp_w), lz_max);
+#else
+                        const size_t lz_units = kit::cut_utf32(lp_w, wcslen(lp_w), lz_max);
+#endif
+                        lu_len = static_cast<uint16_t>(lz_units * sizeof(wchar_t));
                     }
                 }
                 else
@@ -568,12 +552,7 @@ bool cp8_log::send(enum e_p8_level             ie_level,
                     lp_str           = lp_c;
                     if(lp_c)
                     {
-                        size_t lz_slen = strlen(lp_c);
-                        if(lz_slen > lz_str_room)
-                        {
-                            lz_slen = p8_cut_utf8(lp_c, lz_str_room);
-                        }
-                        lu_len = static_cast<uint16_t>(lz_slen);
+                        lu_len = static_cast<uint16_t>(kit::cut_utf8(lp_c, strlen(lp_c), lz_str_room));
                     }
                 }
 

@@ -14,6 +14,7 @@
 #include "kit/thread.hpp"
 #include "kit/time.hpp"
 #include "kit/types.h"
+#include "kit/utf.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -1329,12 +1330,7 @@ size_t cp8_core::get_buffer_size()
 // length of a service string, cut to P8_SVC_STR_MAX_LEN on a UTF-8 boundary
 static size_t get_svc_str_len(const char *ip_str)
 {
-    size_t lz_len = ip_str ? strlen(ip_str) : 0;
-    if(lz_len > P8_SVC_STR_MAX_LEN)
-    {
-        lz_len = p8_cut_utf8(ip_str, P8_SVC_STR_MAX_LEN);
-    }
-    return lz_len;
+    return ip_str ? kit::cut_utf8(ip_str, strlen(ip_str), P8_SVC_STR_MAX_LEN) : 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "kit/time.hpp"
+#include "kit/utf.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_tls_writer::cp8_tls_writer(kit::c_spin_lock *ip_lock)
@@ -211,11 +212,8 @@ s_p8_attrs_result cp8_tls_writer::serialize_attrs(uint8_t                   *&io
             }
 
             // a string longer than the room left is cut on a UTF-8 boundary
-            lz_len = lp_str ? strlen(lp_str) : 0;
-            if(lz_len > lz_room - sizeof(p8_attr_id) - sizeof(uint16_t))
-            {
-                lz_len = p8_cut_utf8(lp_str, lz_room - sizeof(p8_attr_id) - sizeof(uint16_t));
-            }
+            lz_len  = lp_str ? strlen(lp_str) : 0;
+            lz_len  = kit::cut_utf8(lp_str, lz_len, lz_room - sizeof(p8_attr_id) - sizeof(uint16_t));
             lu_len  = static_cast<uint16_t>(lz_len);
             lp_val  = lp_str;
             lz_size = sizeof(p8_attr_id) + sizeof(uint16_t) + lz_len;

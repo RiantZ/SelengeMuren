@@ -45,29 +45,6 @@
 // Span IDs a trace writer takes from the core at once, so the shared counter is touched once per block
 #define P8_CORE_SPAN_ID_BLOCK          65536
 
-// iz_len moved back to the start of the UTF-8 sequence it falls in, so a cut string stays valid UTF-8;
-// ip_str must hold more than iz_len bytes
-inline size_t p8_cut_utf8(const char *ip_str, size_t iz_len)
-{
-    while(iz_len > 0 && 0x80 == (static_cast<uint8_t>(ip_str[iz_len]) & 0xC0))
-    {
-        --iz_len;
-    }
-    return iz_len;
-}
-
-// iz_bytes rounded down to whole UTF-16 units, without a high surrogate left alone at the end, so a cut string stays
-// valid UTF-16; ip_str must hold at least iz_bytes bytes
-inline size_t p8_cut_utf16(const uint16_t *ip_str, size_t iz_bytes)
-{
-    size_t lz_units = iz_bytes / sizeof(uint16_t);
-    if((lz_units > 0) && (0xD800 == (ip_str[lz_units - 1] & 0xFC00)))
-    {
-        --lz_units;
-    }
-    return lz_units * sizeof(uint16_t);
-}
-
 class cp8_tls_writer;
 struct s_p8_log_desc;
 struct s_p8_log_mod;
