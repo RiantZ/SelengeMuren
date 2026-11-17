@@ -19,6 +19,7 @@ Full reference: `doc/code_style.md`. Defaults are non-negotiable unless the user
 5. Format with the repo's `.clang-format` before finishing.
 6. Every function **definition** in `.c` / `.cpp` files is preceded by a separator line of 120 `/` characters.
 7. Comments are short and plain: one line by default, two at most. See [Comments](#comments).
+8. Functions and methods declared in headers carry `///` Doxygen docs: `@brief` in one line, `@param <name>` for every parameter, `@return` unless `void`; the two-line limit applies to each tag. See "Doc comments" in `doc/code_style.md`.
 
 ## File Naming
 
@@ -183,6 +184,7 @@ void my_function(c_my_class *&or_object)
 - [ ] `static constexpr` / `const` use lowercase with prefixes, not ALL_CAPS.
 - [ ] Every function definition in `.c` / `.cpp` is preceded by a 120-char `///...` separator.
 - [ ] Comments are short and plain: one line by default, two at most.
+- [ ] Every function and method declared in a header has `///` docs: `@brief`, a `@param` per parameter, `@return` unless `void`.
 - [ ] Code is formatted with the project `.clang-format`.
 
 ## When in Doubt
