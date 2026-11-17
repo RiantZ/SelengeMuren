@@ -32,6 +32,7 @@ This project ships with an in-tree toolset library at `dep/kit` (public headers 
 | Portable char type                     | `XCHAR`, `tXCHAR` (`kit/ts_helpers.h`, `kit/types.h`) | Bare `char *` / `wchar_t *` in cross-platform paths |
 | String literal (auto char width)       | `TM("...")` / `TMM(...)` (`kit/ts_helpers.h`) | `L"..."` / `"..."` duplicated per platform          |
 | Duplicate a platform string            | `pstr_dup` / `pstr_free_dup` (`kit/types.h`) | `strdup`, `_wcsdup`, manual `malloc`+`memcpy`        |
+| Cut a string length on a char boundary | `kit::cut_utf8` / `kit::cut_utf16` / `kit::cut_utf32` (`kit/utf.hpp`) | Hand-rolled UTF-8 / UTF-16 cut loops |
 | Packing / alignment attribute          | `PRAGMA_PACK_ENTER` / `ATTR_PACK` / `ATTR_ALIGN` (`kit/ts_helpers.h`) | Raw `__attribute__((packed))`, `#pragma pack` |
 | Force-inline                           | `__forceinline` (defined in `kit/ts_helpers.h` on POSIX) | `__attribute__((always_inline))` directly        |
 | Mark argument unused                   | `UNUSED_ARG(x)` (`kit/ts_helpers.h`) | `(void)x;`, `[[maybe_unused]]` in C code              |

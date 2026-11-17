@@ -91,8 +91,8 @@ protected:
     size_t mz_buf_used             = 0;
     size_t mz_buf_max              = 0;
 
-    // Stable identifier of the owning thread, derived once in the constructor
-    // from std::hash<std::thread::id>
+    // OS thread ID of the owning thread from kit::get_thread_id(), taken once in the constructor;
+    // 32 bits as in the protocol: Linux and Windows IDs fit, macOS ones stay below 2^32 for years of uptime
     uint32_t          mu_thread_id = 0;
     uint32_t          mu_writer_id = 0; // from cp8_core::register_writer, goes into every buffer header
     uint32_t          mu_buf_seq   = 0; // number of the next buffer this writer takes

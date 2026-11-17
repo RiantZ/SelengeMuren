@@ -204,7 +204,7 @@ extern "C"
         uint8_t  mu_packet_type; // P8_PACKET_LOGS or P8_PACKET_TRACES or P8_PACKET_METRICS
         uint8_t  mu_flags;       // P8_DATA_FLAG_XXX
         uint16_t mu_size;        // size in bytes
-        uint32_t mu_thread_id;   // thread ID which emits data
+        uint32_t mu_thread_id;   // OS thread ID of the thread which emits data
         uint32_t mu_writer_id;   // unique per writer for the whole session; a writer's buffers come in time order
         uint32_t mu_buf_seq;     // the writer's buffer number: 0, 1, 2, ...; a gap means lost buffers
         uint64_t mu_base_ts;     // writer clock when the buffer was started; record times are signed deltas to it

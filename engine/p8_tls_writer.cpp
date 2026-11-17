@@ -2,15 +2,15 @@
 #include "p8_protocol.h"
 
 #include <cstring>
-#include <functional>
-#include <thread>
 
+#include "kit/thread.hpp"
 #include "kit/time.hpp"
+#include "kit/utf.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_tls_writer::cp8_tls_writer(kit::c_spin_lock *ip_lock)
     : mp_core(cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS))
-    , mu_thread_id(static_cast<uint32_t>(std::hash<std::thread::id> {}(std::this_thread::get_id())))
+    , mu_thread_id(static_cast<uint32_t>(kit::get_thread_id()))
     , mp_lock(ip_lock)
 {
     if(mp_core)
@@ -211,11 +211,8 @@ s_p8_attrs_result cp8_tls_writer::serialize_attrs(uint8_t                   *&io
             }
 
             // a string longer than the room left is cut on a UTF-8 boundary
-            lz_len = lp_str ? strlen(lp_str) : 0;
-            if(lz_len > lz_room - sizeof(p8_attr_id) - sizeof(uint16_t))
-            {
-                lz_len = p8_cut_utf8(lp_str, lz_room - sizeof(p8_attr_id) - sizeof(uint16_t));
-            }
+            lz_len  = lp_str ? strlen(lp_str) : 0;
+            lz_len  = kit::cut_utf8(lp_str, lz_len, lz_room - sizeof(p8_attr_id) - sizeof(uint16_t));
             lu_len  = static_cast<uint16_t>(lz_len);
             lp_val  = lp_str;
             lz_size = sizeof(p8_attr_id) + sizeof(uint16_t) + lz_len;
