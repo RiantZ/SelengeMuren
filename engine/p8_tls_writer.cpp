@@ -2,16 +2,15 @@
 #include "p8_protocol.h"
 
 #include <cstring>
-#include <functional>
-#include <thread>
 
+#include "kit/thread.hpp"
 #include "kit/time.hpp"
 #include "kit/utf.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 cp8_tls_writer::cp8_tls_writer(kit::c_spin_lock *ip_lock)
     : mp_core(cp8_core::get_global_core(P8_CORE_ACQUIRE_TIMEOUT_MS))
-    , mu_thread_id(static_cast<uint32_t>(std::hash<std::thread::id> {}(std::this_thread::get_id())))
+    , mu_thread_id(static_cast<uint32_t>(kit::get_thread_id()))
     , mp_lock(ip_lock)
 {
     if(mp_core)

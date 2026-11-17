@@ -5,6 +5,8 @@
 #include "p8_log.hpp"
 #include "p8_protocol.h"
 
+#include "kit/thread.hpp"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -467,7 +469,7 @@ static s_send_ctx run_send_in_thread(std::function<bool()> il_fn, uint32_t iu_li
     std::thread lo_thread(
         [&lo_ctx, &il_fn]()
         {
-            lo_ctx.mu_thread_id = static_cast<uint32_t>(std::hash<std::thread::id> {}(std::this_thread::get_id()));
+            lo_ctx.mu_thread_id = static_cast<uint32_t>(kit::get_thread_id());
             lo_ctx.mb_result    = il_fn();
         });
     lo_thread.join();
@@ -700,7 +702,7 @@ TEST_F(c_log_content_test, item_hdr_thread_id)
 
     auto lo_fn = [&lo_ctx]()
     {
-        lo_ctx.mu_thread_id = static_cast<uint32_t>(std::hash<std::thread::id> {}(std::this_thread::get_id()));
+        lo_ctx.mu_thread_id = static_cast<uint32_t>(kit::get_thread_id());
         return p8_log_sent(e_p8_trace0,
                            nullptr,
                            0,
